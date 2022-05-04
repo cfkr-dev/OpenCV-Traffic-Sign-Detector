@@ -1,7 +1,12 @@
 import argparse
+from colorsys import hsv_to_rgb
+
 import numpy
 import cv2
+import numpy as np
+from numpy.random import random
 
+from matplotlib import pyplot as plt
 
 if __name__ == "__main__":
 
@@ -24,7 +29,26 @@ if __name__ == "__main__":
 
     # Evaluate sign detections
 
+def equalizeImage(image):
+    grayImage = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    return cv2.equalizeHist(grayImage)
 
 
+def showImage(title, image):
+    cv2.imshow(title, image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+def main():
+    image = equalizeImage(cv2.imread('train_jpg/00/00000.jpg'))
+    # showImage('Original image', image)
+
+    mser = cv2.MSER_create(delta=5, max_variation=0.5, max_area=20000)
+    detection, borders = mser.detectRegions(image)
+
+
+
+
+main()
 
 
