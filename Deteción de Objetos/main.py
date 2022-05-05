@@ -1,4 +1,5 @@
 import argparse
+import os
 from colorsys import hsv_to_rgb
 
 import numpy
@@ -9,7 +10,6 @@ from numpy.random import random
 from matplotlib import pyplot as plt
 
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser(
         description='Trains and executes a given detector over a set of testing images')
     parser.add_argument(
@@ -29,9 +29,20 @@ if __name__ == "__main__":
 
     # Evaluate sign detections
 
-def equalizeImage(image):
+
+def grayAndEnhanceContrast(image):
+    # Img turn gray
     grayImage = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    return cv2.equalizeHist(grayImage)
+    # Img Equalized
+    equImage = cv2.equalizeHist(grayImage)
+    # Use Contrast Limited Adaptive Histogram Equalization (Improve contrast)
+    clahe = cv2.createCLAHE(clipLimit=2, tileGridSize=(20, 20))
+    claheImage = clahe.apply(equImage)
+    # Reduce image noise
+    noiselessImage = cv2.fastNlMeansDenoising(claheImage, None, 10, 7, 21)
+    finalImage = noiselessImage
+
+    return finalImage
 
 
 def showImage(title, image):
@@ -39,16 +50,27 @@ def showImage(title, image):
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
-def main():
-    image = equalizeImage(cv2.imread('train_jpg/00/00000.jpg'))
-    # showImage('Original image', image)
 
-    mser = cv2.MSER_create(delta=5, max_variation=0.5, max_area=20000)
-    detection, borders = mser.detectRegions(image)
+def main(path):
+    realImage = cv2.imread(path)
+    modifiedImage = grayAndEnhanceContrast(cv2.imread(path))
+    showImage('Original image', modifiedImage)
+
+    mser = cv2.MSER_create(delta=3, min_area=200, max_area=800, max_variation=0.2)
+    detection, borders = mser.detectRegions(modifiedImage)
+
+    for box in borders:
+        x, y, w, h = box
+        squareGoodAspectRatio = True if (0.8 < w / h < 1.2) else False
+        if squareGoodAspectRatio:
+            cv2.rectangle(realImage, (x, y), (x + w, y + h), (255, 0, 0), 1)
+    plt.imshow(realImage)
+    plt.show()
 
 
-
-
-main()
-
-
+path = 'test_alumnos_jpg'
+files = os.listdir(path)
+for file in files:
+    if not file.endswith('.txt'):
+        print(file)
+        main(path + '/' + file)
