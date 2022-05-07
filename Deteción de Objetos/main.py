@@ -33,16 +33,13 @@ if __name__ == "__main__":
 def grayAndEnhanceContrast(image):
     # Img turn gray
     grayImage = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    # Img Equalized
-    equImage = cv2.equalizeHist(grayImage)
-    # Use Contrast Limited Adaptive Histogram Equalization (Improve contrast)
-    clahe = cv2.createCLAHE(clipLimit=2, tileGridSize=(20, 20))
-    claheImage = clahe.apply(equImage)
-    # Reduce image noise
-    noiselessImage = cv2.fastNlMeansDenoising(claheImage, None, 10, 7, 21)
-    finalImage = noiselessImage
+    blurImage = cv2.GaussianBlur(grayImage, (7, 7), 0)
+    clahe = cv2.createCLAHE(clipLimit=10, tileGridSize=(1, 1))
+    claheImage = clahe.apply(blurImage)
+    contrastAndBrightnessCorrectionImage = cv2.convertScaleAbs(claheImage, alpha=3, beta=-500)
+    # threshImage = cv2.adaptiveThreshold(new_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 29, -4)
 
-    return finalImage
+    return contrastAndBrightnessCorrectionImage
 
 
 def showImage(title, image):
@@ -56,7 +53,7 @@ def main(path):
     modifiedImage = grayAndEnhanceContrast(cv2.imread(path))
     showImage('Original image', modifiedImage)
 
-    mser = cv2.MSER_create(delta=3, min_area=200, max_area=800, max_variation=0.2)
+    mser = cv2.MSER_create(delta=5, min_area=200, max_area=2000, max_variation=0.1)
     detection, borders = mser.detectRegions(modifiedImage)
 
     for box in borders:
