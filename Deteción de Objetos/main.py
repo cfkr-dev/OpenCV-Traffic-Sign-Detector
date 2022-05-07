@@ -1,12 +1,8 @@
 import argparse
 import os
 from colorsys import hsv_to_rgb
-
-import numpy
 import cv2
 import numpy as np
-from numpy.random import random
-
 from matplotlib import pyplot as plt
 
 if __name__ == "__main__":
@@ -29,6 +25,33 @@ if __name__ == "__main__":
 
     # Evaluate sign detections
 
+def HSVAzulRojo(image, color):
+    imageResize = cv2.resize(image, (25, 25))
+    imageHSV = cv2.cvtColor(imageResize, cv2.COLOR_BGR2HSV)
+    
+    # Red color
+    if color == 'r':
+        # Lower red mask
+        lowerRed = np.array([0, 50, 50])
+        upperRed = np.array([10, 255, 255])
+        maskLower = cv2.inRange(imageHSV, lowerRed, upperRed)
+
+        # Upper red mask
+        lowerRed = np.array([170, 50, 50])
+        upperRed = np.array([180, 255, 255])
+        maskUpper = cv2.inRange(imageHSV, lowerRed, upperRed)
+        
+        maskRed = cv2.add(maskLower, maskUpper)
+        
+        return maskRed
+
+    # Blue color = b
+    elif color == 'b':
+      lowerBlue = np.array([90, 70, 50], np.uint8)
+      upperBlue = np.array([128, 255, 255], np.uint8)
+      maskBlue = cv2.inRange(imageHSV, lowerBlue, upperBlue)
+
+      return maskBlue
 
 def grayAndEnhanceContrast(image):
     # Img turn gray
@@ -38,7 +61,6 @@ def grayAndEnhanceContrast(image):
     claheImage = clahe.apply(blurImage)
     contrastAndBrightnessCorrectionImage = cv2.convertScaleAbs(claheImage, alpha=3, beta=-500)
     # threshImage = cv2.adaptiveThreshold(new_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 29, -4)
-
     return contrastAndBrightnessCorrectionImage
 
 
@@ -63,7 +85,6 @@ def main(path):
             cv2.rectangle(realImage, (x, y), (x + w, y + h), (255, 0, 0), 1)
     plt.imshow(realImage)
     plt.show()
-
 
 path = 'test_alumnos_jpg'
 files = os.listdir(path)
