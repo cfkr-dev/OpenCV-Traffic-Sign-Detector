@@ -1,29 +1,14 @@
 import argparse
 import os
+from time import sleep
+
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt
 import tempfile
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description='Trains and executes a given detector over a set of testing images')
-    parser.add_argument(
-        '--detector', type=str, nargs="?", default="", help='Detector string name')
-    parser.add_argument(
-        '--train_path', default="", help='Select the training data dir')
-    parser.add_argument(
-        '--test_path', default="", help='Select the testing data dir')
-
-    args = parser.parse_args()
-
-    # Load training data
-
-    # Create the detector
-
-    # Load testing data
-
-    # Evaluate sign detections
+# Loop progress bar || Resource from: https://github.com/tqdm/tqdm
+from tqdm import tqdm
 
 
 def makeWindowBiggerOrDiscardFakeDetections(window, percentage):
@@ -73,67 +58,74 @@ def calculateHistAndNormalize(image):
 
 
 def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance):
+    deletions = []
     if detections:
-        lastDetection = detections[-1]
+        for detection in detections:
 
-        """ Use histogram comparison between two images || resource from: 
-        https://docs.opencv.org/3.4/d8/dc8/tutorial_histogram_comparison.html """
+            """ Use histogram comparison between two images || resource from: 
+                    https://docs.opencv.org/3.4/d8/dc8/tutorial_histogram_comparison.html """
+            similarity = cv2.compareHist(calculateHistAndNormalize(image), calculateHistAndNormalize(detection),
+                                         cv2.HISTCMP_CORREL)
 
-        similarity = cv2.compareHist(calculateHistAndNormalize(image), calculateHistAndNormalize(lastDetection), cv2.HISTCMP_CORREL)
+            if similarity > tolerance:
+                deletions.append(detection)
+            elif 0.45 <= similarity <= tolerance:
+                image = cv2.addWeighted(image, 0.5, detection, 0.5, 0.0)
+                deletions.append(detection)
 
-        if similarity > tolerance:
-            return None, True, False
-        elif 0.50 <= similarity <= tolerance:
-            image = cv2.addWeighted(image, 0.5, lastDetection, 0.5, 0.0)
-            return image, False, True
-        else:
-            return image, False, False
-    else:
-        return image, False, False
+    return image, deletions
+
+
+def getElementIndexFromList(l, element):
+    # Consider "l" contains "element"
+
+    index = 0
+    for x in l:
+        if np.array_equal(x, element):
+            return index
+        index += 1
 
 
 def cleanDuplicatedDetections(imageDetections):
     cleanDetections = []
 
     for image in imageDetections:
-        image, duplicated, merged = checkIfImageIsDuplicatedOrMergeSimilarOnes(image, cleanDetections, 0.85)
-        if not duplicated:
-            if merged:
-                cleanDetections.pop()
+        image, deletions = checkIfImageIsDuplicatedOrMergeSimilarOnes(image, cleanDetections, 0.85)
+        if deletions:
+            for deletedImage in deletions:
+                cleanDetections.pop(getElementIndexFromList(cleanDetections, deletedImage))
 
-            cleanDetections.append(image)
+        cleanDetections.append(image)
 
-            plt.imshow(image)
-            plt.show()
+        plt.imshow(image)
+        plt.show()
 
     return cleanDetections
 
 
-def MSERTrafficSignDetector(image):
+def MSERTrafficSignDetector(image, mser):
     modifiedImage = grayAndEnhanceContrast(image)
     # showImage('Original image', modifiedImage)
 
-    mser = cv2.MSER_create(delta=5, min_area=200, max_area=2000, max_variation=0.1)
     windowsBorders = mser.detectRegions(modifiedImage)[1]
 
     croppedImageDetections = []
     i = 0
     for window in windowsBorders:
 
-        i += 1
-        print(i)
+        # i += 1
+        # print(i)
+        #
+        # # if i == 264:
+        # #     print('error')
 
-        if i == 55:
-            print('error')
-
-        windowCords = makeWindowBiggerOrDiscardFakeDetections(window, 1.25)
+        windowCords = makeWindowBiggerOrDiscardFakeDetections(window, 1.30)
         if windowCords is not None:
             croppedImageDetections.append(cv2.resize(cropImageByCoords(windowCords, image), (25, 25)))
 
     croppedImageDetections = cleanDuplicatedDetections(croppedImageDetections)
 
     return croppedImageDetections
-
 
 def grayAndEnhanceContrast(image):
     # Img turn gray
@@ -190,7 +182,7 @@ def calculateMeanMask():
     namesList = ['prohibicion', 'peligro', 'stop', 'direccionProhibida', 'cedaPaso', 'direccionObligatoria']
     namesListPosition = -1
 
-    for signType in signs:
+    for signType in tqdm(signs):
         namesListPosition += 1
         mask = np.zeros((25, 25, 3), np.uint8)
         first = True
@@ -208,13 +200,14 @@ def calculateMeanMask():
             cv2.imwrite(tempdir + '/' + namesList[namesListPosition] + '.jpg', HSVAzulRojo(mask, 'b'))
         else:
             cv2.imwrite(tempdir + '/' + namesList[namesListPosition] + '.jpg', HSVAzulRojo(mask, 'r'))
+        sleep(0.01)
+    return tempdir
 
 
 def showImage(title, image):
     cv2.imshow(title, image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
-
 
 def main():
     path = 'test_alumnos_jpg'
@@ -224,8 +217,8 @@ def main():
             print(file)
         detections = MSERTrafficSignDetector(cv2.imread(path + '/' + file))
 
-        for detection in detections:
-            showImage('detección', detection)
+        # for detection in detections:
+        #     showImage('detección', detection)
 
 
 # path = 'test_alumnos_jpg'
@@ -237,4 +230,18 @@ def main():
 
 # calculateMeanMask()
 
-main()
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser(
+#         description='Trains and executes a given detector over a set of testing images')
+#     parser.add_argument(
+#         '--detector', type=str, nargs="?", default="", help='Detector string name')
+#     parser.add_argument(
+#         '--train_path', default="", help='Select the training data dir')
+#     parser.add_argument(
+#         '--test_path', default="", help='Select the testing data dir')
+#
+#     args = parser.parse_args()
+#
+#     test()
+
+# test("train_jpg", "test_alumnos_jpg")
