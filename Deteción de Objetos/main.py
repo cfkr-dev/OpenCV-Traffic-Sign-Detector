@@ -127,6 +127,7 @@ def MSERTrafficSignDetector(image, mser):
 
     return croppedImageDetections
 
+
 def grayAndEnhanceContrast(image):
     # Img turn gray
     grayImage = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -209,6 +210,40 @@ def showImage(title, image):
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 
+
+def test(trainPath, testPath):
+    print("\nVa a comenzar el test de detección de señales de tráfico...")
+    print("\nGenerando mascaras a partir de imágenes de entrenamiento... (", trainPath, ")")
+
+    try:
+        masksDir = calculateMeanMask()
+    except:
+        print("Ha ocurrido un problema generando las máscaras :(")
+    else:
+        print("Máscarás generadas con éxito en", masksDir)
+
+    print("\nIniciando detector MSER...")
+
+    try:
+        delta = 5
+        minArea = 200
+        maxArea = 2000
+        maxVariation = 0.1
+
+        mser = cv2.MSER_create(delta=delta, min_area=minArea, max_area=maxArea, max_variation=maxVariation)
+    except:
+        print("Ha ocurrido un error generando el detector :(")
+    else:
+        print("Se ha creado con éxito el detector MSER con parámetros:\n")
+        print("   DELTA:", delta)
+        print("   MIN AREA:", minArea)
+        print("   MAX AREA:", maxArea)
+        print("   MAX VARIATION:", maxVariation)
+
+    print("\nVa a comenzar la detección de señales de tráfico en las imágenes de test (", testPath, ")")
+    print("Analizando y extrayendo regiones de interés...")
+
+
 def main():
     path = 'test_alumnos_jpg'
     files = os.listdir(path)
@@ -219,7 +254,6 @@ def main():
 
         # for detection in detections:
         #     showImage('detección', detection)
-
 
 # path = 'test_alumnos_jpg'
 # files = os.listdir(path)
