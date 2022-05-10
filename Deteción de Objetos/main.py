@@ -1,5 +1,6 @@
 import argparse
 import os
+import shutil
 from time import sleep
 
 import cv2
@@ -9,6 +10,9 @@ import tempfile
 
 # Loop progress bar || Resource from: https://github.com/tqdm/tqdm
 from tqdm import tqdm
+
+# Use GPU to improve performance || Resource form: https://www.geeksforgeeks.org/running-python-script-on-gpu/
+from numba import jit, cuda
 
 
 def makeWindowBiggerOrDiscardFakeDetections(window, percentage):
@@ -28,14 +32,9 @@ def makeWindowBiggerOrDiscardFakeDetections(window, percentage):
         x2 = x2 + middleDeltaW if x2 + middleDeltaW > 0 else 0
         y2 = y2 + middleDeltaH if y2 + middleDeltaH > 0 else 0
 
-        return x1, y1, x2, y2
+        return int(x1), int(y1), int(x2), int(y2)
     else:
         return None
-
-
-def drawWindowsOnImage(windowsCoords, image):
-    x1, y1, x2, y2 = windowsCoords
-    return cv2.rectangle(image, (x1, y1), (x2, y2), (255, 0, 0), 1)
 
 
 def cropImageByCoords(coords, image):
@@ -57,6 +56,7 @@ def calculateHistAndNormalize(image):
     return cv2.normalize(imageHist, imageHist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
 
 
+# @cuda.jit(target="cuda")
 def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance):
     deletions = []
     if detections:
@@ -76,9 +76,9 @@ def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance):
     return image, deletions
 
 
+# @cuda.jit(target="cuda")
 def getElementIndexFromList(l, element):
     # Consider "l" contains "element"
-
     index = 0
     for x in l:
         if np.array_equal(x, element):
@@ -86,6 +86,7 @@ def getElementIndexFromList(l, element):
         index += 1
 
 
+# @cuda.jit(target="cuda")
 def cleanDuplicatedDetections(imageDetections):
     cleanDetections = []
 
@@ -97,35 +98,48 @@ def cleanDuplicatedDetections(imageDetections):
 
         cleanDetections.append(image)
 
-        plt.imshow(image)
-        plt.show()
-
     return cleanDetections
 
 
+def createImageWithWindows(image, windowsBorders):
+    for x1, y1, x2, y2 in windowsBorders:
+        image = cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 1)
+
+    return image
+
+
+def detectSignsOnDirectory(path, mser):
+    directoryDetections = []
+    numberOfDetections = []
+    imagesWithWindows = []
+    for file in tqdm(os.listdir(path)):
+        if not file.endswith('.txt'):
+            detections, windowsBorders = MSERTrafficSignDetector(cv2.imread(path + '/' + file), mser)
+            directoryDetections.append(detections)
+            numberOfDetections.append((file, len(detections)))
+            imagesWithWindows.append((file, createImageWithWindows(cv2.imread(path + '/' + file), windowsBorders)))
+    sleep(0.02)
+    return directoryDetections, numberOfDetections, imagesWithWindows
+
+
+# @cuda.jit(target="cuda")
 def MSERTrafficSignDetector(image, mser):
     modifiedImage = grayAndEnhanceContrast(image)
-    # showImage('Original image', modifiedImage)
 
     windowsBorders = mser.detectRegions(modifiedImage)[1]
 
     croppedImageDetections = []
-    i = 0
+    windowsBordersWithoutFakeDetections = []
     for window in windowsBorders:
-
-        # i += 1
-        # print(i)
-        #
-        # # if i == 264:
-        # #     print('error')
 
         windowCords = makeWindowBiggerOrDiscardFakeDetections(window, 1.30)
         if windowCords is not None:
             croppedImageDetections.append(cv2.resize(cropImageByCoords(windowCords, image), (25, 25)))
+            windowsBordersWithoutFakeDetections.append(windowCords)
 
     croppedImageDetections = cleanDuplicatedDetections(croppedImageDetections)
 
-    return croppedImageDetections
+    return croppedImageDetections, windowsBordersWithoutFakeDetections
 
 
 def grayAndEnhanceContrast(image):
@@ -135,7 +149,6 @@ def grayAndEnhanceContrast(image):
     clahe = cv2.createCLAHE(clipLimit=10, tileGridSize=(1, 1))
     claheImage = clahe.apply(blurImage)
     contrastAndBrightnessCorrectionImage = cv2.convertScaleAbs(claheImage, alpha=3, beta=-500)
-    # threshImage = cv2.adaptiveThreshold(new_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 29, -4)
     return contrastAndBrightnessCorrectionImage
 
 
@@ -217,12 +230,14 @@ def test(trainPath, testPath):
 
     try:
         masksDir = calculateMeanMask()
-    except:
-        print("Ha ocurrido un problema generando las máscaras :(")
+    except Exception as e:
+        print("Ha ocurrido un problema generando las máscaras :(   (", e, ")")
     else:
         print("Máscarás generadas con éxito en", masksDir)
 
     print("\nIniciando detector MSER...")
+
+    mser = None
 
     try:
         delta = 5
@@ -231,38 +246,52 @@ def test(trainPath, testPath):
         maxVariation = 0.1
 
         mser = cv2.MSER_create(delta=delta, min_area=minArea, max_area=maxArea, max_variation=maxVariation)
-    except:
-        print("Ha ocurrido un error generando el detector :(")
+    except Exception as e:
+        print("Ha ocurrido un error generando el detector :(   (", e, ")")
     else:
         print("Se ha creado con éxito el detector MSER con parámetros:\n")
         print("   DELTA:", delta)
         print("   MIN AREA:", minArea)
         print("   MAX AREA:", maxArea)
         print("   MAX VARIATION:", maxVariation)
+    finally:
 
-    print("\nVa a comenzar la detección de señales de tráfico en las imágenes de test (", testPath, ")")
-    print("Analizando y extrayendo regiones de interés...")
+        print("\nVa a comenzar la detección de señales de tráfico en las imágenes de test... (", testPath, ")\n")
+        print("Analizando y extrayendo regiones de interés...")
 
+        try:
+            detections, numDetections, imagesWithDetections = detectSignsOnDirectory(testPath, mser)
+        except Exception as e:
+            print("Ha ocurrido un error en el proceso de detección de señales :(   (", e, ")")
+        else:
+            resultImagesPath = "resultado_imgs"
 
-def main():
-    path = 'test_alumnos_jpg'
-    files = os.listdir(path)
-    for file in files:
-        if not file.endswith('.txt'):
-            print(file)
-        detections = MSERTrafficSignDetector(cv2.imread(path + '/' + file))
+            print("\nEl proceso ha concluido con éxito, las imágenes de test con sus respectivas detecciones (sin "
+                  "eliminación de repeticiones) serán "
+                  "guardadas en", resultImagesPath)
 
-        # for detection in detections:
-        #     showImage('detección', detection)
+            print("\nGenerando resultados...")
 
-# path = 'test_alumnos_jpg'
-# files = os.listdir(path)
-# for file in files:
-#     if not file.endswith('.txt'):
-#         print(file)
-#         main(path + '/' + file)
+            if os.path.isdir(resultImagesPath):
+                shutil.rmtree(resultImagesPath)
 
-# calculateMeanMask()
+            os.mkdir(resultImagesPath)
+
+            for file, image in tqdm(imagesWithDetections):
+                cv2.imwrite(resultImagesPath + "/" + file, image)
+                sleep(0.02)
+
+            print(
+                "\nA continuación se listarán las detecciones obtenidas, con eliminación de repeticiones, por cada "
+                "archivo en",
+                testPath, "\n")
+
+            total = 0
+            for file, number in numDetections:
+                print(file, ".......", number, "   detecciones" if number < 10 else "  detecciones")
+                total += number
+            print("Total ...........", total, "detecciones")
+
 
 # if __name__ == "__main__":
 #     parser = argparse.ArgumentParser(
@@ -278,4 +307,4 @@ def main():
 #
 #     test()
 
-# test("train_jpg", "test_alumnos_jpg")
+test("train_jpg", "test_alumnos_jpg")
