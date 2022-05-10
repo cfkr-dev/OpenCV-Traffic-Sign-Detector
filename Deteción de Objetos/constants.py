@@ -1,0 +1,1 @@
+SIGNALLIST = ['prohibicion', 'peligro', 'stop', 'direccionProhibida', 'cedaPaso', 'direccionObligatoria']

@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 from matplotlib import pyplot as plt
 import tempfile
-
+import constants
 # Loop progress bar || Resource from: https://github.com/tqdm/tqdm
 from tqdm import tqdm
 
@@ -138,7 +138,7 @@ def grayAndEnhanceContrast(image):
     return contrastAndBrightnessCorrectionImage
 
 
-def HSVAzulRojo(image, color):
+def HSVBlueRed(image, color):
     imageResize = cv2.resize(image, (25, 25))
     imageHSV = cv2.cvtColor(imageResize, cv2.COLOR_BGR2HSV)
 
@@ -158,7 +158,7 @@ def HSVAzulRojo(image, color):
 
         return maskRed
 
-    # Blue color = b
+    # Blue color
     elif color == 'b':
         lowerBlue = np.array([90, 70, 50], np.uint8)
         upperBlue = np.array([128, 255, 255], np.uint8)
@@ -179,7 +179,6 @@ def calculateMeanMask():
 
     signs = [prohibicion, peligro, stop, direccionProhibida, cedaPaso, direccionObligatoria]
 
-    namesList = ['prohibicion', 'peligro', 'stop', 'direccionProhibida', 'cedaPaso', 'direccionObligatoria']
     namesListPosition = -1
 
     for signType in tqdm(signs):
@@ -197,12 +196,29 @@ def calculateMeanMask():
                     mask = cv2.addWeighted(currentResizedImage, 0.5, mask, 0.5, 0.0)
 
         if namesListPosition == 5:
-            cv2.imwrite(tempdir + '/' + namesList[namesListPosition] + '.jpg', HSVAzulRojo(mask, 'b'))
+            cv2.imwrite(tempdir + '/' + constants.SIGNALLIST[namesListPosition] + '.jpg', HSVBlueRed(mask, 'b'))
         else:
-            cv2.imwrite(tempdir + '/' + namesList[namesListPosition] + '.jpg', HSVAzulRojo(mask, 'r'))
+            cv2.imwrite(tempdir + '/' + constants.SIGNALLIST[namesListPosition] + '.jpg', HSVBlueRed(mask, 'r'))
         sleep(0.01)
     return tempdir
 
+def signalDetection(image):
+    scoreRed, signalNameRed = similarSignal(HSVBlueRed(image, 'r'))
+    scoreBlue, signalNameBlue = similarSignal(HSVBlueRed(image, 'b'))
+    if scoreRed < scoreBlue:
+        return signalNameRed
+    else:
+        return signalNameBlue
+
+def similarSignal(mask):
+    finalScore = 9999999
+    for signal in constants.SIGNALLIST:
+        imageSignal = cv2.imread("meanMasks/" + signal + ".jpg", 0)
+        score = cv2.subtract(imageSignal, mask)
+        if score < finalScore:
+            signalName = signal
+            finalScore = score
+    return finalScore, signalName
 
 def showImage(title, image):
     cv2.imshow(title, image)
