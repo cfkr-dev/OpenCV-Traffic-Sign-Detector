@@ -24,7 +24,7 @@ def makeWindowBiggerOrDiscardFakeDetections(window, percentage):
     middleDeltaW = w * (percentage - 1) * 0.5
     middleDeltaH = h * (percentage - 1) * 0.5
 
-    squareGoodAspectRatio = True if (0.8 < w / h < 1.2) else False
+    squareGoodAspectRatio = True if (0.8 < w / h < 1.20) else False
     if squareGoodAspectRatio:
 
         x1 = x1 - middleDeltaW if x1 - middleDeltaW > 0 else 0
@@ -38,7 +38,7 @@ def makeWindowBiggerOrDiscardFakeDetections(window, percentage):
 
 
 def cropImageByCoords(coords, image):
-    x1, y1, x2, y2 = np.asarray(coords).astype(int)
+    x1, y1, x2, y2 = coords
     return image[y1:y2, x1:x2]
 
 
@@ -57,6 +57,12 @@ def calculateHistAndNormalize(image):
 
 
 # @cuda.jit(target="cuda")
+def meanCoods(coordsA, coordsB):
+    x1A, y1A, x2A, y2A = coordsA
+    x1B, y1B, x2B, y2B = coordsB
+    return (x1A + x1B) // 2, (y1A + y1B) // 2, (x2A + x2B) // 2, (y2A + y2B) // 2
+
+
 def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance):
     deletions = []
     if detections:
@@ -64,13 +70,13 @@ def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance):
 
             """ Use histogram comparison between two images || resource from: 
                     https://docs.opencv.org/3.4/d8/dc8/tutorial_histogram_comparison.html """
-            similarity = cv2.compareHist(calculateHistAndNormalize(image), calculateHistAndNormalize(detection),
+            similarity = cv2.compareHist(calculateHistAndNormalize(image[0]), calculateHistAndNormalize(detection[0]),
                                          cv2.HISTCMP_CORREL)
 
             if similarity > tolerance:
                 deletions.append(detection)
-            elif 0.45 <= similarity <= tolerance:
-                image = cv2.addWeighted(image, 0.5, detection, 0.5, 0.0)
+            elif 0.75 <= similarity <= tolerance:
+                image = (cv2.addWeighted(image[0], 0.5, detection[0], 0.5, 0.0), meanCoods(image[1], detection[1]))
                 deletions.append(detection)
 
     return image, deletions
@@ -94,7 +100,7 @@ def cleanDuplicatedDetections(imageDetections):
         image, deletions = checkIfImageIsDuplicatedOrMergeSimilarOnes(image, cleanDetections, 0.85)
         if deletions:
             for deletedImage in deletions:
-                cleanDetections.pop(getElementIndexFromList(cleanDetections, deletedImage))
+                cleanDetections.pop(getElementIndexFromList(cleanDetections, deletedImage[0]))
 
         cleanDetections.append(image)
 
@@ -102,7 +108,8 @@ def cleanDuplicatedDetections(imageDetections):
 
 
 def createImageWithWindows(image, windowsBorders):
-    for x1, y1, x2, y2 in windowsBorders:
+    for detectedImage in windowsBorders:
+        x1, y1, x2, y2 = detectedImage[1]
         image = cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 1)
 
     return image
@@ -114,10 +121,12 @@ def detectSignsOnDirectory(path, mser):
     imagesWithWindows = []
     for file in tqdm(os.listdir(path)):
         if not file.endswith('.txt'):
-            detections, windowsBorders = MSERTrafficSignDetector(cv2.imread(path + '/' + file), mser)
+            detections = MSERTrafficSignDetector(cv2.imread(path + '/' + file), mser)
             directoryDetections.append(detections)
             numberOfDetections.append((file, len(detections)))
-            imagesWithWindows.append((file, createImageWithWindows(cv2.imread(path + '/' + file), windowsBorders)))
+            image = createImageWithWindows(cv2.imread(path + '/' + file), detections)
+            imagesWithWindows.append((file, image))
+
     sleep(0.02)
     return directoryDetections, numberOfDetections, imagesWithWindows
 
@@ -129,27 +138,41 @@ def MSERTrafficSignDetector(image, mser):
     windowsBorders = mser.detectRegions(modifiedImage)[1]
 
     croppedImageDetections = []
-    windowsBordersWithoutFakeDetections = []
     for window in windowsBorders:
 
         windowCords = makeWindowBiggerOrDiscardFakeDetections(window, 1.30)
         if windowCords is not None:
-            croppedImageDetections.append(cv2.resize(cropImageByCoords(windowCords, image), (25, 25)))
-            windowsBordersWithoutFakeDetections.append(windowCords)
+            croppedImageDetections.append((cv2.resize(cropImageByCoords(windowCords, image), (25, 25)), windowCords))
 
     croppedImageDetections = cleanDuplicatedDetections(croppedImageDetections)
 
-    return croppedImageDetections, windowsBordersWithoutFakeDetections
+    return croppedImageDetections
+
+
+# Gamma correction for enhance exposure || Resource from:
+# https://lindevs.com/apply-gamma-correction-to-an-image-using-opencv/
+
+def gammaCorrection(src, gamma):
+    invGamma = 1 / gamma
+
+    table = [((i / 255) ** invGamma) * 255 for i in range(256)]
+    table = np.array(table, np.uint8)
+
+    return cv2.LUT(src, table)
 
 
 def grayAndEnhanceContrast(image):
     # Img turn gray
+
     grayImage = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurImage = cv2.GaussianBlur(grayImage, (7, 7), 0)
-    clahe = cv2.createCLAHE(clipLimit=10, tileGridSize=(1, 1))
-    claheImage = clahe.apply(blurImage)
-    contrastAndBrightnessCorrectionImage = cv2.convertScaleAbs(claheImage, alpha=3, beta=-500)
-    return contrastAndBrightnessCorrectionImage
+    clahe = cv2.createCLAHE(clipLimit=2)
+    claheImage = clahe.apply(grayImage)
+    blurImage = cv2.GaussianBlur(claheImage, (3, 3), 0)
+    imageGammaCorrection = gammaCorrection(blurImage, 2)
+
+    result = imageGammaCorrection
+
+    return result
 
 
 def HSVAzulRojo(image, color):
@@ -218,13 +241,13 @@ def calculateMeanMask():
     return tempdir
 
 
-def showImage(title, image):
-    cv2.imshow(title, image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+# def showImage(title, image):
+#     cv2.imshow(title, image)
+#     cv2.waitKey(0)
+#     cv2.destroyAllWindows()
 
 
-def test(trainPath, testPath):
+def test(trainPath, testPath, MSERValues):
     print("\nVa a comenzar el test de detección de señales de tráfico...")
     print("\nGenerando mascaras a partir de imágenes de entrenamiento... (", trainPath, ")")
 
@@ -240,10 +263,12 @@ def test(trainPath, testPath):
     mser = None
 
     try:
-        delta = 5
-        minArea = 200
-        maxArea = 2000
-        maxVariation = 0.1
+        delta, minA, maxA, maxVar = MSERValues
+
+        delta = delta
+        minArea = minA
+        maxArea = maxA
+        maxVariation = maxVar
 
         mser = cv2.MSER_create(delta=delta, min_area=minArea, max_area=maxArea, max_variation=maxVariation)
     except Exception as e:
@@ -264,7 +289,7 @@ def test(trainPath, testPath):
         except Exception as e:
             print("Ha ocurrido un error en el proceso de detección de señales :(   (", e, ")")
         else:
-            resultImagesPath = "resultado_imgs"
+            resultImagesPath = "resultado_imgs_d" + str(delta) + "_mv" + str(maxVar)
 
             print("\nEl proceso ha concluido con éxito, las imágenes de test con sus respectivas detecciones (sin "
                   "eliminación de repeticiones) serán "
@@ -291,6 +316,7 @@ def test(trainPath, testPath):
                 print(file, ".......", number, "   detecciones" if number < 10 else "  detecciones")
                 total += number
             print("Total ...........", total, "detecciones")
+    return total
 
 
 # if __name__ == "__main__":
@@ -307,4 +333,20 @@ def test(trainPath, testPath):
 #
 #     test()
 
-test("train_jpg", "test_alumnos_jpg")
+def multiTest():
+    delta = np.arange(7, 19, 1)
+    variation = np.arange(0.05, 1.05, 0.05)
+
+    totals = []
+    for d in delta:
+        for v in variation:
+            total = test("train_jpg", "test_alumnos_jpg", (d, 200, 2000, v))
+            totals.append((d, v, total))
+
+    for t in totals:
+        print(t)
+
+
+# test("train_jpg", "test_alumnos_jpg", (25, 200, 2000, 1))
+
+multiTest()
