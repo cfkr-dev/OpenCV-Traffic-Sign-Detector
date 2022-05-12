@@ -1,4 +1,5 @@
 import argparse
+import math
 import os
 from time import sleep
 
@@ -202,21 +203,28 @@ def calculateMeanMask():
         sleep(0.01)
     return tempdir
 
-def signalDetection(image):
-    scoreRed, signalNameRed = similarSignal(HSVBlueRed(image, 'r'))
-    scoreBlue, signalNameBlue = similarSignal(HSVBlueRed(image, 'b'))
-    if scoreRed < scoreBlue:
+def signalDetection(image, dir):
+    red = HSVBlueRed(image, 'r')
+    blue = HSVBlueRed(image, 'b')
+    scoreRed, signalNameRed = similarSignal(red,dir)
+    scoreBlue, signalNameBlue = similarSignal(blue,dir)
+    if scoreRed > scoreBlue:
         return signalNameRed
     else:
         return signalNameBlue
 
-def similarSignal(mask):
-    finalScore = 9999999
-    for signal in constants.SIGNALLIST:
-        imageSignal = cv2.imread("meanMasks/" + signal + ".jpg", 0)
-        score = cv2.subtract(imageSignal, mask)
-        if score < finalScore:
-            signalName = signal
+def similarSignal(mask,dir):
+    finalScore = -math.inf
+    dirlist = os.listdir(dir)
+    signalName = ''
+    for signal in dirlist:
+        imageSignal = cv2.imread(dir + '/' + signal,0)
+        imageSignalAnd = mask * imageSignal
+        onceImageCorrelation = np.count_nonzero(imageSignalAnd)
+        onceImageMask = np.count_nonzero(mask)
+        score = onceImageCorrelation/onceImageMask
+        if score > finalScore:
+            signalName = constants.SIGNALLIST.index(signal.split('.')[0])+1
             finalScore = score
     return finalScore, signalName
 
@@ -237,14 +245,17 @@ def main():
         #     showImage('detección', detection)
 
 
-# path = 'test_alumnos_jpg'
-# files = os.listdir(path)
-# for file in files:
-#     if not file.endswith('.txt'):
-#         print(file)
+#path = 'test_alumnos_jpg'
+#files = os.listdir(path)
+#for file in files:
+        #     if not file.endswith('.txt'):
+        #         print(file)
 #         main(path + '/' + file)
 
-# calculateMeanMask()
+dir = calculateMeanMask()
+image = cv2.imread("train_jpg/00/00002.jpg")
+imagenr = cv2.resize(image, (25, 25))
+print(signalDetection(imagenr, dir))
 
 # if __name__ == "__main__":
 #     parser = argparse.ArgumentParser(
