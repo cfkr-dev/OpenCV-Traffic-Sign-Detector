@@ -221,8 +221,10 @@ def similarSignal(mask,dir):
         imageSignal = cv2.imread(dir + '/' + signal,0)
         imageSignalAnd = mask * imageSignal
         onceImageCorrelation = np.count_nonzero(imageSignalAnd)
-        onceImageMask = np.count_nonzero(mask)
+        onceImageMask = np.count_nonzero(imageSignal)
         score = onceImageCorrelation/onceImageMask
+
+        # IMPLEMENTAR CONTABILIZACIÓN POR FILAS Y COLUMNAS
         if score > finalScore:
             signalName = constants.SIGNALLIST.index(signal.split('.')[0])+1
             finalScore = score
