@@ -87,7 +87,7 @@ def getElementIndexFromList(l, element):
     # Consider "l" contains "element"
     index = 0
     for x in l:
-        if np.array_equal(x, element):
+        if np.array_equal(x[0], element):
             return index
         index += 1
 
@@ -238,7 +238,7 @@ def calculateMeanMask():
         else:
             cv2.imwrite(tempdir + '/' + namesList[namesListPosition] + '.jpg', HSVAzulRojo(mask, 'r'))
         sleep(0.01)
-    return tempdir
+    return tempdir  # Acordase de eliminar al terminar la ejecución el dir temporal
 
 
 # def showImage(title, image):
@@ -247,76 +247,316 @@ def calculateMeanMask():
 #     cv2.destroyAllWindows()
 
 
+def detectionsMaskCorrelation(detections, masksDir):
+    raise TypeError("No está definido el comportamiento de esta función")
+
+
+# detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
+def createDetectionsStrings(detections):
+    detectionsStrings = []
+    for detection in detections:
+        filename, x1, y1, x2, y2, signType, score = detection
+        detectionsStrings.append(
+            filename.split(".", 1)[0] + ".ppm;" + x1 + ";" + y1 + ";" + x2 + ";" + y2 + ";" + signType + ";" + score)
+    return detectionsStrings
+
+
+def calculateSignType(signType):
+    prohibicion = ['00', '01', '02', '03', '04', '05', '07', '08', '09', '10', '15', '16']
+    peligro = ['11', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31']
+    stop = ['14']
+    direccionProhibida = ['17']
+    cedaPaso = ['13']
+    direccionObligatoria = ['38']
+
+    if signType in prohibicion:
+        return 1
+    elif signType in peligro:
+        return 2
+    elif signType in stop:
+        return 3
+    elif signType in direccionProhibida:
+        return 4
+    elif signType in cedaPaso:
+        return 5
+    elif signType in direccionObligatoria:
+        return 6
+
+
+def getResultsOnFile(fileName, detections, realResults):
+    detectionsOnFile = []
+    realResultsOnFile = []
+
+    for detection in detections:
+        if detection[0].split(".", 1)[0] == fileName.split(".", 1)[0]:
+            detectionsOnFile.append(detection)
+
+    for realResult in realResults:
+        if realResult[0].split(".", 1)[0] == fileName.split(".", 1)[0]:
+            realResultsOnFile.append(realResult)
+
+    return detectionsOnFile, realResultsOnFile
+
+# generateStatistics -> (list detectionsPerFileByType[str fileName,
+# list detectionsByTypeOnFile[(str type , int totalCorrectByTypeOnFile ,
+# int totalIncorrectByTypeOnFile, int expectedTotalCorrectByTypeOnFile) ,
+# int totalCorrectOnFile , int totalIncorrectOnFile, int expectedTotalCorrectOnFile]]
+# ; list totalDetectionsByType[(str type , int totalCorrectByType ,
+# int totalIncorrectByType , int expectedTotalCorrectByType)]; int totalCorrect ; int
+# totalIncorrect ; expectedTotalCorrect)
+
+
+# AÑADIR DUPLICADOS -> NO CONTABILIZARLOS NI EN ACIERTOS NI EN FALLOS
+
+# detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
+
+def generateStatistics(detections, realResultsFilePath, fileNames):
+    realResults = []
+    file = open(realResultsFilePath, "r")
+    for line in file:
+
+        filename, x1, y1, x2, y2, signType = line.split(';')
+
+        x1 = int(x1)
+        x2 = int(x2)
+        y1 = int(y1)
+        y2 = int(y2)
+        signType = calculateSignType(signType)
+
+        realResults.append((filename, x1, y1, x2, y2, signType))
+
+    for fileName in fileNames:
+        detectionsOnFile, realResultsOnFile = getResultsOnFile(fileName[0], detections, realResults)
+
+
+
+
+
+
+
+    raise TypeError("No está definido el comportamiento de esta función")
+
+
 def test(trainPath, testPath, MSERValues):
     print("\nVa a comenzar el test de detección de señales de tráfico...")
-    print("\nGenerando mascaras a partir de imágenes de entrenamiento... (", trainPath, ")")
+    print("\nGenerando mascaras a partir de imágenes de entrenamiento... \n(" + trainPath + ")")
 
     try:
         masksDir = calculateMeanMask()
     except Exception as e:
-        print("Ha ocurrido un problema generando las máscaras :(   (", e, ")")
+        print("Ha ocurrido un problema generando las máscaras :(")
+        print("\n"
+              "------------------------------------------------------------\n"
+              "                        TEST FALLIDO                        \n"
+              "------------------------------------------------------------\n")
+        print(e)
     else:
-        print("Máscarás generadas con éxito en", masksDir)
+        print("Máscaras generadas con éxito en", masksDir)
 
-    print("\nIniciando detector MSER...")
-
-    mser = None
-
-    try:
-        delta, minA, maxA, maxVar = MSERValues
-
-        delta = delta
-        minArea = minA
-        maxArea = maxA
-        maxVariation = maxVar
-
-        mser = cv2.MSER_create(delta=delta, min_area=minArea, max_area=maxArea, max_variation=maxVariation)
-    except Exception as e:
-        print("Ha ocurrido un error generando el detector :(   (", e, ")")
-    else:
-        print("Se ha creado con éxito el detector MSER con parámetros:\n")
-        print("   DELTA:", delta)
-        print("   MIN AREA:", minArea)
-        print("   MAX AREA:", maxArea)
-        print("   MAX VARIATION:", maxVariation)
-    finally:
-
-        print("\nVa a comenzar la detección de señales de tráfico en las imágenes de test... (", testPath, ")\n")
-        print("Analizando y extrayendo regiones de interés...")
+        print("\nIniciando detector MSER...")
 
         try:
-            detections, numDetections, imagesWithDetections = detectSignsOnDirectory(testPath, mser)
+            delta, minA, maxA, maxVar = MSERValues
+
+            delta = delta
+            minArea = minA
+            maxArea = maxA
+            maxVariation = maxVar
+
+            mser = cv2.MSER_create(delta=delta, min_area=minArea, max_area=maxArea, max_variation=maxVariation)
         except Exception as e:
-            print("Ha ocurrido un error en el proceso de detección de señales :(   (", e, ")")
+            print("Ha ocurrido un error generando el detector :(")
+            print("\n"
+                  "------------------------------------------------------------\n"
+                  "                        TEST FALLIDO                        \n"
+                  "------------------------------------------------------------\n")
+            print(e)
         else:
-            resultImagesPath = "resultado_imgs_d" + str(delta) + "_mv" + str(maxVar)
-
-            print("\nEl proceso ha concluido con éxito, las imágenes de test con sus respectivas detecciones (sin "
-                  "eliminación de repeticiones) serán "
-                  "guardadas en", resultImagesPath)
-
-            print("\nGenerando resultados...")
-
-            if os.path.isdir(resultImagesPath):
-                shutil.rmtree(resultImagesPath)
-
-            os.mkdir(resultImagesPath)
-
-            for file, image in tqdm(imagesWithDetections):
-                cv2.imwrite(resultImagesPath + "/" + file, image)
-                sleep(0.02)
+            print("Se ha creado con éxito el detector MSER con parámetros:\n")
+            print("   DELTA:", delta)
+            print("   MIN AREA:", minArea)
+            print("   MAX AREA:", maxArea)
+            print("   MAX VARIATION:", maxVariation)
 
             print(
-                "\nA continuación se listarán las detecciones obtenidas, con eliminación de repeticiones, por cada "
-                "archivo en",
-                testPath, "\n")
+                "\nVa a comenzar la detección de señales de tráfico en las imágenes de test... \n(" + testPath + ")\n")
+            print("Analizando y extrayendo regiones de interés...")
 
-            total = 0
-            for file, number in numDetections:
-                print(file, ".......", number, "   detecciones" if number < 10 else "  detecciones")
-                total += number
-            print("Total ...........", total, "detecciones")
-    return total
+            try:
+                detections, numDetections, imagesWithDetections = detectSignsOnDirectory(testPath, mser)
+            except Exception as e:
+                print("Ha ocurrido un error en el proceso de detección de señales :(")
+                print("\n"
+                      "------------------------------------------------------------\n"
+                      "                        TEST FALLIDO                        \n"
+                      "------------------------------------------------------------\n")
+                print(e)
+            else:
+                resultImagesPath = "resultado_imgs"  # _d" + str(delta) + "_mv" + str(maxVar)  # Borrar después de testing
+
+                print("\nEl proceso ha concluido con éxito, las imágenes de test con sus respectivas detecciones (con "
+                      "eliminación de repeticiones) serán "
+                      "guardadas en", resultImagesPath)
+
+                print("\nGenerando resultados...")
+
+                try:
+                    if os.path.isdir(resultImagesPath):
+                        shutil.rmtree(resultImagesPath)
+
+                    os.mkdir(resultImagesPath)
+
+                    for file, image in tqdm(imagesWithDetections):
+                        cv2.imwrite(resultImagesPath + "/" + file, image)
+                        sleep(0.02)
+                except Exception as e:
+                    print("Ha ocurrido un error guardando los archivos :(")
+                    print("\n"
+                          "------------------------------------------------------------\n"
+                          "                        TEST FALLIDO                        \n"
+                          "------------------------------------------------------------\n")
+                    print(e)
+                else:
+                    print(
+                        "\nA continuación se listarán las detecciones obtenidas, con eliminación de repeticiones, "
+                        "por cada "
+                        "archivo en",
+                        testPath + "\n")
+
+                    total = 0
+                    for file, number in numDetections:
+                        print(file, ".......", number, "   detecciones" if number < 10 else "  detecciones")
+                        total += number
+                    print("Total ...........", total, "detecciones")
+
+                    print("\nVa a comenzar el proceso de filtrado por correlación de máscaras almacenadas en el "
+                          "directorio"
+                          , trainPath + "...\n")
+                    print("Realizando el filtrado...")
+                    try:
+                        # detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
+                        detections = detectionsMaskCorrelation(detections, masksDir)
+                    except Exception as e:
+                        print("Ha ocurrido un error en el proceso de correlación de máscaras :(")
+                        print("\n"
+                              "------------------------------------------------------------\n"
+                              "                        TEST FALLIDO                        \n"
+                              "------------------------------------------------------------\n")
+                        print(e)
+                    else:
+                        finalDetectionsPath = "resultado.txt"
+
+                        print("\nEl proceso ha concluido con éxito y las detecciones filtradas serán guardadas en el "
+                              "archivo", finalDetectionsPath + ". La codificación de los resultados es la siguiente:")
+                        print("nombre_archivo.ppm;x1_coord;y1_coord;x2_coord;y2_coord;tipo_señal;score\n")
+                        print("  x1_coord  ===>  coordenada x de la esquina superior izquierda de la detección\n"
+                              "  y1_coord  ===>  coordenada y de la esquina superior izquierda de la detección\n"
+                              "  x2_coord  ===>  coordenada x de la esquina inferior derecha de la detección\n"
+                              "  y2_coord  ===>  coordenada y de la esquina inferior derecha de la detección\n"
+                              "tipo_señal  ===>  1 -> Obligación      2 -> Peligro        3 -> Stop\n"
+                              "                  4 -> dir Prohibida   5 -> ceda el paso   6 -> dir obligatoria\n"
+                              "     score  ===>  Puntuación de acierto en la detección\n")
+
+                        print("Generando archivo de resultados...")
+
+                        try:
+                            detectionsStrings = createDetectionsStrings(detections)
+                            file = open(finalDetectionsPath, "w")
+                            for detection in detectionsStrings:
+                                file.write(detection + "\n")
+                            file.close()
+                        except Exception as e:
+                            print("Ha ocurrido un error en el proceso de creación del archivo de resultados :(")
+                            print("\n"
+                                  "------------------------------------------------------------\n"
+                                  "                        TEST FALLIDO                        \n"
+                                  "------------------------------------------------------------\n")
+                            print(e)
+                        else:
+                            realResultsFilePath = "test_alumnos_jpg/gt.txt"
+                            print("\nEl archivo de resultados ha sido generado correctamente")
+                            print(
+                                "\nFinalmente van a mostrarse las estadísticas de funcionamiento del programa a "
+                                "partir del fichero de resultados reales",
+                                realResultsFilePath)
+                            try:
+                                print("\nGenerando estadísticas...")
+
+                                # generateStatistics -> (list detectionsPerFileByType[str fileName,
+                                # list detectionsByTypeOnFile[(str type , int totalCorrectByTypeOnFile ,
+                                # int totalIncorrectByTypeOnFile, int expectedTotalCorrectByTypeOnFile) ,
+                                # int totalCorrectOnFile , int totalIncorrectOnFile, int expectedTotalCorrectOnFile]]
+                                # ; list totalDetectionsByType[(str type , int totalCorrectByType ,
+                                # int totalIncorrectByType , int expectedTotalCorrectByType)]; int totalCorrect ; int
+                                # totalIncorrect ; expectedTotalCorrect)
+
+                                # AÑADIR DUPLICADOS -> NO CONTABILIZARLOS NI EN ACIERTOS NI EN FALLOS
+
+                                statisticsResults = generateStatistics(detections, realResultsFilePath, numDetections)
+                            except Exception as e:
+                                print("Ha ocurrido un error generando las estadísticas :(")
+                                print("\n"
+                                      "------------------------------------------------------------\n"
+                                      "                        TEST FALLIDO                        \n"
+                                      "------------------------------------------------------------\n")
+                                print(e)
+                            else:
+                                print("\nLas estadísticas de funcionamiento son las siguientes:")
+
+                                detectionsPerFileByType, totalDetectionsByType, totalCorrect, totalIncorrect, expectedTotalCorrect = statisticsResults
+
+                                print("\n"
+                                      "---------------------------------\n"
+                                      "     DETECCIONES POR ARCHIVO     \n"
+                                      "---------------------------------\n")
+                                for detectionPerFile in detectionsPerFileByType:
+                                    fileName, detectionsByTypeOnFile, totalCorrectOnFile, totalIncorrectOnFile, expectedTotalCorrectOnFile = detectionPerFile
+                                    print(fileName, "...............................")
+                                    print("                TOTAL CORRECTAS:", totalCorrectOnFile)
+                                    print("              TOTAL INCORRECTAS:", totalIncorrectOnFile)
+                                    print("        VALOR CORRECTO ESPERADO:", expectedTotalCorrectOnFile)
+                                    print("                TASA DE ACIERTO:",
+                                          totalCorrectOnFile / expectedTotalCorrectOnFile)
+                                    for detectionByTypeOnFile in detectionsByTypeOnFile:
+                                        signType, totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile, expectedTotalCorrectByTypeOnFile = detectionByTypeOnFile
+                                        print("\n            " + signType + ":..................................")
+                                        print("                                  TOTAL CORRECTAS:",
+                                              totalCorrectByTypeOnFile)
+                                        print("                                TOTAL INCORRECTAS:",
+                                              totalIncorrectByTypeOnFile)
+                                        print("                          VALOR CORRECTO ESPERADO:",
+                                              expectedTotalCorrectByTypeOnFile)
+                                        print("                                  TASA DE ACIERTO:",
+                                              totalCorrectByTypeOnFile / expectedTotalCorrectByTypeOnFile)
+
+                                print("\n"
+                                      "---------------------------------------\n"
+                                      "     DETECCIONES POR TIPO DE SEÑAL     \n"
+                                      "---------------------------------------\n")
+                                for detectionByType in totalDetectionsByType:
+                                    signType, totalCorrectByType, totalIncorrectByType, expectedTotalCorrectByType = detectionByType
+                                    print(signType, "...............................")
+                                    print("                TOTAL CORRECTAS:", totalCorrectByType)
+                                    print("              TOTAL INCORRECTAS:", totalIncorrectByType)
+                                    print("        VALOR CORRECTO ESPERADO:", expectedTotalCorrectByType)
+                                    print("                TASA DE ACIERTO:",
+                                          totalCorrectByType / expectedTotalCorrectByType)
+
+                                print("\n"
+                                      "-----------------------------\n"
+                                      "     DETECCIONES TOTALES     \n"
+                                      "-----------------------------\n")
+                                print("TOTAL CORRECTAS:", totalCorrect)
+                                print("TOTAL INCORRECTAS:", totalIncorrect)
+                                print("VALOR CORRECTO ESPERADO:", expectedTotalCorrect)
+                                print("TASA DE ACIERTO:", totalCorrect / expectedTotalCorrect)
+
+                                print("\n"
+                                      "------------------------------------------------------------\n"
+                                      "                  TEST TERMINADO CON ÉXITO                  \n"
+                                      "------------------------------------------------------------\n")
+
+                                return totalCorrect / expectedTotalCorrect  # Borrar después de testing
 
 
 # if __name__ == "__main__":
@@ -333,6 +573,10 @@ def test(trainPath, testPath, MSERValues):
 #
 #     test()
 
+def getTotal(e):
+    return e[2]
+
+
 def multiTest():
     delta = np.arange(7, 19, 1)
     variation = np.arange(0.05, 1.05, 0.05)
@@ -343,10 +587,13 @@ def multiTest():
             total = test("train_jpg", "test_alumnos_jpg", (d, 200, 2000, v))
             totals.append((d, v, total))
 
+    totals.sort(key=getTotal, reverse=True)
     for t in totals:
         print(t)
 
+    print("\n\n\nVALOR ÓPTIMO!!!!!:", totals[0])
 
-# test("train_jpg", "test_alumnos_jpg", (25, 200, 2000, 1))
 
-multiTest()
+test("train_jpg", "test_alumnos_jpg", (25, 200, 2000, 1))
+
+# multiTest()
