@@ -1,4 +1,5 @@
 import argparse
+import math
 import os
 import shutil
 from time import sleep
@@ -121,7 +122,7 @@ def detectSignsOnDirectory(path, mser):
     imagesWithWindows = []
     for file in tqdm(os.listdir(path)):
         if not file.endswith('.txt'):
-            detections = MSERTrafficSignDetector(cv2.imread(path + '/' + file), mser)
+            detections = MSERTrafficSignDetector(cv2.imread(path + '/' + file), mser, file)
             directoryDetections.append(detections)
             numberOfDetections.append((file, len(detections)))
             image = createImageWithWindows(cv2.imread(path + '/' + file), detections)
@@ -132,7 +133,7 @@ def detectSignsOnDirectory(path, mser):
 
 
 # @cuda.jit(target="cuda")
-def MSERTrafficSignDetector(image, mser):
+def MSERTrafficSignDetector(image, mser, file):
     modifiedImage = grayAndEnhanceContrast(image)
 
     windowsBorders = mser.detectRegions(modifiedImage)[1]
@@ -142,7 +143,8 @@ def MSERTrafficSignDetector(image, mser):
 
         windowCords = makeWindowBiggerOrDiscardFakeDetections(window, 1.30)
         if windowCords is not None:
-            croppedImageDetections.append((cv2.resize(cropImageByCoords(windowCords, image), (25, 25)), windowCords))
+            croppedImageDetections.append(
+                (cv2.resize(cropImageByCoords(windowCords, image), (25, 25)), windowCords, file))
 
     croppedImageDetections = cleanDuplicatedDetections(croppedImageDetections)
 
@@ -241,12 +243,6 @@ def calculateMeanMask():
     return tempdir  # Acordase de eliminar al terminar la ejecución el dir temporal
 
 
-# def showImage(title, image):
-#     cv2.imshow(title, image)
-#     cv2.waitKey(0)
-#     cv2.destroyAllWindows()
-
-
 def detectionsMaskCorrelation(detections, masksDir):
     raise TypeError("No está definido el comportamiento de esta función")
 
@@ -297,6 +293,107 @@ def getResultsOnFile(fileName, detections, realResults):
 
     return detectionsOnFile, realResultsOnFile
 
+
+def appendResultsByTypeOnFile(resultsOnFile, resultsProhibicionOnFile, resultsPeligroOnFile, resultsStopOnFile,
+                              resultsDirProhOnFile, resultsCedaPasoOnFile, resultsDirObligOnFile):
+    for resultOnFile in resultsOnFile:
+        if resultOnFile[5] == 1:
+            resultsProhibicionOnFile.append(resultOnFile)
+        elif resultOnFile[5] == 2:
+            resultsPeligroOnFile.append(resultOnFile)
+        elif resultOnFile[5] == 3:
+            resultsStopOnFile.append(resultOnFile)
+        elif resultOnFile[5] == 4:
+            resultsDirProhOnFile.append(resultOnFile)
+        elif resultOnFile[5] == 5:
+            resultsCedaPasoOnFile.append(resultOnFile)
+        else:
+            resultsDirObligOnFile.append(resultOnFile)
+
+    return [resultsProhibicionOnFile, resultsPeligroOnFile, resultsStopOnFile,
+            resultsDirProhOnFile, resultsCedaPasoOnFile, resultsDirObligOnFile]
+
+
+def getResultsByTypeOnFile(detectionsOnFile, realResultsOnFile):
+    detectionsProhibicionOnFile = []
+    detectionsPeligroOnFile = []
+    detectionsStopOnFile = []
+    detectionsDirProhOnFile = []
+    detectionsCedaPasoOnFile = []
+    detectionsDirObligOnFile = []
+
+    realResultsProhibicionOnFile = []
+    realResultsPeligroOnFile = []
+    realResultsStopOnFile = []
+    realResultsDirProhOnFile = []
+    realResultsCedaPasoOnFile = []
+    realResultsDirObligOnFile = []
+
+    detectionsByTypeOnFile = appendResultsByTypeOnFile(detectionsOnFile, detectionsProhibicionOnFile,
+                                                       detectionsPeligroOnFile,
+                                                       detectionsStopOnFile,
+                                                       detectionsDirProhOnFile,
+                                                       detectionsCedaPasoOnFile,
+                                                       detectionsDirObligOnFile)
+
+    realResultsByTypeOnFile = appendResultsByTypeOnFile(realResultsOnFile, realResultsProhibicionOnFile,
+                                                        realResultsPeligroOnFile,
+                                                        realResultsStopOnFile,
+                                                        realResultsDirProhOnFile,
+                                                        realResultsCedaPasoOnFile,
+                                                        realResultsDirObligOnFile)
+
+    return detectionsByTypeOnFile, realResultsByTypeOnFile
+
+
+def checkIfDetectionByTypeOnFileIsCorrectIncorrectDuplicated(detectionByTypeOnFile, realResultsByTypeOnFile,
+                                                             checkedRealResults):
+    finalCosineSimilarity = -math.inf
+    realResultSimilar = None
+    for realResultByTypeOnFile in realResultsByTypeOnFile:
+        realResultCoords = [realResultByTypeOnFile[1], realResultByTypeOnFile[2], realResultByTypeOnFile[3],
+                            realResultByTypeOnFile[4]]
+        detectionCoords = [detectionByTypeOnFile[1], detectionByTypeOnFile[2], detectionByTypeOnFile[3],
+                           detectionByTypeOnFile[4]]
+        cosineSimilarity = np.dot(realResultCoords, detectionCoords) / (
+                    np.linalg.norm(realResultCoords) * np.linalg.norm(detectionCoords))
+        if cosineSimilarity > finalCosineSimilarity:
+            finalCosineSimilarity = cosineSimilarity
+            realResultSimilar = realResultByTypeOnFile
+
+    if finalCosineSimilarity > 0.85:
+        return "correct", checkedRealResults.add(realResultSimilar)
+    elif finalCosineSimilarity > 0.85 and realResultSimilar in checkedRealResults:
+        return "duplicated"
+    else:
+        return "incorrect"
+
+
+def getCorrectsAndIncorrectsByTypeOnFile(detectionsByTypeOnFile, realResultsByTypeOnFile):
+    checkedRealResults = set()
+
+    correctDetections = 0
+    incorrectDetections = 0
+    duplicatedDetections = 0
+
+    if detectionsByTypeOnFile and realResultsByTypeOnFile:
+        for detectionByTypeOnFile in detectionsByTypeOnFile:
+            checkResult, checkedRealResults = checkIfDetectionByTypeOnFileIsCorrectIncorrectDuplicated(
+                detectionByTypeOnFile, realResultsByTypeOnFile, checkedRealResults)
+            if checkResult == "correct":
+                correctDetections += 1
+            elif checkResult == "duplicated":
+                duplicatedDetections += 1
+            else:
+                incorrectDetections += 1
+    elif realResultsByTypeOnFile:
+        incorrectDetections = len(realResultsByTypeOnFile)
+    elif detectionsByTypeOnFile:
+        incorrectDetections = len(detectionsByTypeOnFile)
+
+    return correctDetections, incorrectDetections
+
+
 # generateStatistics -> (list detectionsPerFileByType[str fileName,
 # list detectionsByTypeOnFile[(str type , int totalCorrectByTypeOnFile ,
 # int totalIncorrectByTypeOnFile, int expectedTotalCorrectByTypeOnFile) ,
@@ -305,36 +402,67 @@ def getResultsOnFile(fileName, detections, realResults):
 # int totalIncorrectByType , int expectedTotalCorrectByType)]; int totalCorrect ; int
 # totalIncorrect ; expectedTotalCorrect)
 
-
-# AÑADIR DUPLICADOS -> NO CONTABILIZARLOS NI EN ACIERTOS NI EN FALLOS
-
 # detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
 
-def generateStatistics(detections, realResultsFilePath, fileNames):
+
+def generateStatistics(detections, realResultsFilePath, numberDetections):
     realResults = []
     file = open(realResultsFilePath, "r")
     for line in file:
-
         filename, x1, y1, x2, y2, signType = line.split(';')
+        realResults.append((filename, int(x1), int(y1), int(x2), int(y2), calculateSignType(signType)))
 
-        x1 = int(x1)
-        x2 = int(x2)
-        y1 = int(y1)
-        y2 = int(y2)
-        signType = calculateSignType(signType)
+    detectionsPerFileByType = []
+    totalDetectionsByType = {
+        "prohibicion": (0, 0, 0),
+        "peligro": (0, 0, 0),
+        "stop": (0, 0, 0),
+        "direccionProhibida": (0, 0, 0),
+        "cedaPaso": (0, 0, 0),
+        "direccionObligatoria": (0, 0, 0)
+    }
+    totalCorrect = 0
+    totalIncorrect = 0
+    expectedTotalCorrect = 0
+    for fileNameAndNumber in numberDetections:
+        detectionsOnFile, realResultsOnFile = getResultsOnFile(fileNameAndNumber[0], detections, realResults)
+        detectionsPerTypeOnFile, realResultsPerTypeOnFile = getResultsByTypeOnFile(detectionsOnFile, realResultsOnFile)
 
-        realResults.append((filename, x1, y1, x2, y2, signType))
+        totalCorrectOnFile = 0
+        totalIncorrectOnFile = 0
+        expectedTotalCorrectOnFile = len(realResultsPerTypeOnFile)
 
-    for fileName in fileNames:
-        detectionsOnFile, realResultsOnFile = getResultsOnFile(fileName[0], detections, realResults)
+        signalTypeIndex = -1
+        detectionsByTypeOnFileResults = []
+        for detectionsByTypeOnFile, realResultsByTypeOnFile in detectionsPerTypeOnFile, realResultsPerTypeOnFile:
+            signalTypeIndex += 1
 
+            totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile = getCorrectsAndIncorrectsByTypeOnFile(
+                detectionsByTypeOnFile, realResultsByTypeOnFile)
+            detectionsByTypeOnFileResults.append((constants.SIGNALLIST[signalTypeIndex], totalCorrectByTypeOnFile,
+                                                  totalIncorrectByTypeOnFile, len(realResultsByTypeOnFile)))
 
+            totalCorrectOnFile += totalCorrectByTypeOnFile
+            totalIncorrectOnFile += totalIncorrectByTypeOnFile
 
+        for detectionByTypeOnFileResults in detectionsByTypeOnFileResults:
+            correct, incorrect, expectedCorrect = totalDetectionsByType[detectionByTypeOnFileResults[0]]
+            correct += detectionByTypeOnFileResults[1]
+            incorrect += detectionByTypeOnFileResults[2]
+            expectedCorrect += detectionByTypeOnFileResults[3]
+            totalDetectionsByType[detectionByTypeOnFileResults[0]] = (correct, incorrect, expectedCorrect)
 
+        detectionsPerFileByType.append((fileNameAndNumber[0], detectionsByTypeOnFileResults, totalCorrectOnFile,
+                                        totalIncorrectOnFile, expectedTotalCorrectOnFile))
 
+        totalDetectionsByType = list(totalDetectionsByType.items())
 
+        for totalDetectionByType in totalDetectionsByType:
+            totalCorrect += totalDetectionByType[1]
+            totalIncorrect += totalDetectionByType[2]
+            expectedTotalCorrect += totalDetectionByType[3]
 
-    raise TypeError("No está definido el comportamiento de esta función")
+    return detectionsPerFileByType, totalDetectionsByType, totalCorrect, totalIncorrect, expectedTotalCorrect
 
 
 def test(trainPath, testPath, MSERValues):
