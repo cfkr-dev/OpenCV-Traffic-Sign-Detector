@@ -3,17 +3,15 @@ import math
 import os
 import shutil
 from time import sleep
-
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt
 import tempfile
-
+import constants
 # Loop progress bar || Resource from: https://github.com/tqdm/tqdm
 from tqdm import tqdm
+from scipy.spatial.distance import cdist
 
-# Use GPU to improve performance || Resource form: https://www.geeksforgeeks.org/running-python-script-on-gpu/
-from numba import jit, cuda
 
 
 def makeWindowBiggerOrDiscardFakeDetections(window, percentage):
@@ -57,7 +55,6 @@ def calculateHistAndNormalize(image):
     return cv2.normalize(imageHist, imageHist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
 
 
-# @cuda.jit(target="cuda")
 def meanCoods(coordsA, coordsB):
     x1A, y1A, x2A, y2A = coordsA
     x1B, y1B, x2B, y2B = coordsB
@@ -83,7 +80,6 @@ def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance):
     return image, deletions
 
 
-# @cuda.jit(target="cuda")
 def getElementIndexFromList(l, element):
     # Consider "l" contains "element"
     index = 0
@@ -93,7 +89,6 @@ def getElementIndexFromList(l, element):
         index += 1
 
 
-# @cuda.jit(target="cuda")
 def cleanDuplicatedDetections(imageDetections):
     cleanDetections = []
 
@@ -132,7 +127,6 @@ def detectSignsOnDirectory(path, mser):
     return directoryDetections, numberOfDetections, imagesWithWindows
 
 
-# @cuda.jit(target="cuda")
 def MSERTrafficSignDetector(image, mser, file):
     modifiedImage = grayAndEnhanceContrast(image)
 
@@ -153,7 +147,6 @@ def MSERTrafficSignDetector(image, mser, file):
 
 # Gamma correction for enhance exposure || Resource from:
 # https://lindevs.com/apply-gamma-correction-to-an-image-using-opencv/
-
 def gammaCorrection(src, gamma):
     invGamma = 1 / gamma
 
@@ -162,7 +155,7 @@ def gammaCorrection(src, gamma):
 
     return cv2.LUT(src, table)
 
-
+  
 def grayAndEnhanceContrast(image):
     # Img turn gray
 
@@ -177,29 +170,30 @@ def grayAndEnhanceContrast(image):
     return result
 
 
-def HSVAzulRojo(image, color):
+# Color filtering using HSV || Resource from: https://www.geeksforgeeks.org/filter-color-with-opencv/
+def getColorMaskRedOrBlue(image, color):
     imageResize = cv2.resize(image, (25, 25))
     imageHSV = cv2.cvtColor(imageResize, cv2.COLOR_BGR2HSV)
 
     # Red color
     if color == 'r':
         # Lower red mask
-        lowerRed = np.array([0, 50, 50])
+        lowerRed = np.array([0, 50, 10])
         upperRed = np.array([10, 255, 255])
         maskLower = cv2.inRange(imageHSV, lowerRed, upperRed)
 
         # Upper red mask
-        lowerRed = np.array([170, 50, 50])
-        upperRed = np.array([180, 255, 255])
+        lowerRed = np.array([160, 50, 10])
+        upperRed = np.array([179, 255, 255])
         maskUpper = cv2.inRange(imageHSV, lowerRed, upperRed)
 
         maskRed = cv2.add(maskLower, maskUpper)
 
         return maskRed
 
-    # Blue color = b
+    # Blue color
     elif color == 'b':
-        lowerBlue = np.array([90, 70, 50], np.uint8)
+        lowerBlue = np.array([90, 70, 10], np.uint8)
         upperBlue = np.array([128, 255, 255], np.uint8)
         maskBlue = cv2.inRange(imageHSV, lowerBlue, upperBlue)
 
@@ -207,7 +201,8 @@ def HSVAzulRojo(image, color):
 
 
 def calculateMeanMask():
-    tempdir = tempfile.mkdtemp(prefix="meanMasks-")
+    signalsMasksRed = []
+    signalsMasksBlue = []
 
     prohibicion = ['00', '01', '02', '03', '04', '05', '07', '08', '09', '10', '15', '16']
     peligro = ['11', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31']
@@ -218,7 +213,6 @@ def calculateMeanMask():
 
     signs = [prohibicion, peligro, stop, direccionProhibida, cedaPaso, direccionObligatoria]
 
-    namesList = ['prohibicion', 'peligro', 'stop', 'direccionProhibida', 'cedaPaso', 'direccionObligatoria']
     namesListPosition = -1
 
     for signType in tqdm(signs):
@@ -235,17 +229,72 @@ def calculateMeanMask():
                 else:
                     mask = cv2.addWeighted(currentResizedImage, 0.5, mask, 0.5, 0.0)
 
-        if namesListPosition == 5:
-            cv2.imwrite(tempdir + '/' + namesList[namesListPosition] + '.jpg', HSVAzulRojo(mask, 'b'))
-        else:
-            cv2.imwrite(tempdir + '/' + namesList[namesListPosition] + '.jpg', HSVAzulRojo(mask, 'r'))
+        signalsMasksBlue.append((getColorMaskRedOrBlue(mask, 'b'), constants.SIGNALLIST[namesListPosition]))
+        signalsMasksRed.append((getColorMaskRedOrBlue(mask, 'r'), constants.SIGNALLIST[namesListPosition]))
+
         sleep(0.01)
-    return tempdir  # Acordase de eliminar al terminar la ejecución el dir temporal
+        
+    return signalsMasksRed, signalsMasksBlue
+
+
+def getSimilarSignalType(imageMask, signalsMasks):
+    finalScore = -math.inf
+    signalName = ''
+
+    for signalMask in signalsMasks:
+        signalMaskImage, signalMaskName = signalMask
+        imageMaskANDSignalMask = imageMask * signalMaskImage
+        score = calculateScoreBetweenMatrixs(imageMaskANDSignalMask, signalMaskImage)
+
+        if score > finalScore:
+            signalName = constants.SIGNALLIST.index(signalMaskName) + 1
+            finalScore = score
+
+    return finalScore, signalName
+
+
+def calculateSignalType(detection, signalsMasksRed, signalsMasksBlue):
+    redHSVImageMask = getColorMaskRedOrBlue(detection[0], 'r')
+    blueHSVImageMask = getColorMaskRedOrBlue(detection[0], 'b')
+    scoreRed, signalIDRed = getSimilarSignalType(redHSVImageMask, signalsMasksRed)
+    scoreBlue, signalIDBlue = getSimilarSignalType(blueHSVImageMask, signalsMasksBlue)
+
+    x1, y1, x2, y2 = detection[1]
+    if scoreRed > scoreBlue:
+        return detection[2], x1, y1, x2, y2, signalIDRed, scoreRed
+    else:
+        return detection[2], x1, y1, x2, y2, signalIDBlue, scoreBlue
+
+
+# based on recall and precision calculus || Resource from:
+# https://en.wikipedia.org/wiki/Precision_and_recall#Definition_(classification_context)
+def calculateScoreBetweenMatrixs(matrix1, matrix2):
+    truePositives = 0
+    falsePositives = 0
+    falseNegatives = 0
+    trueNegatives = 0
+
+    if matrix1.shape == matrix2.shape:
+        matrix2 = matrix2 // 255
+        for rowMatrix1, rowMatrix2 in zip(matrix1, matrix2):
+            for elementMatrix1, elementMatrix2 in zip(rowMatrix1, rowMatrix2):
+                if elementMatrix1 == 1 and elementMatrix2 == 1:
+                    truePositives += 1
+                elif elementMatrix1 == 1 and elementMatrix2 == 0:
+                    falsePositives += 1
+                elif elementMatrix1 == 0 and elementMatrix2 == 1:
+                    falseNegatives += 1
+                else:
+                    trueNegatives += 1
+        matrixShape = matrix1.shape[0] * matrix1.shape[1]
+        if matrixShape + matrixShape * 0.01 >= trueNegatives >= matrixShape - matrixShape * 0.01:
+            return 0
+        else:
+            return round((2 * truePositives) / ((2 * truePositives) + falsePositives + falseNegatives), 2)
 
 
 def detectionsMaskCorrelation(detections, masksDir):
     raise TypeError("No está definido el comportamiento de esta función")
-
 
 # detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
 def createDetectionsStrings(detections):
@@ -685,7 +734,6 @@ def test(trainPath, testPath, MSERValues):
                                       "------------------------------------------------------------\n")
 
                                 return totalCorrect / expectedTotalCorrect  # Borrar después de testing
-
 
 # if __name__ == "__main__":
 #     parser = argparse.ArgumentParser(
