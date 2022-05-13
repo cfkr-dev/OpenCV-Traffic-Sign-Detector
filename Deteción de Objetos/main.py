@@ -1,8 +1,8 @@
 import argparse
 import math
 import os
+import shutil
 from time import sleep
-
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt
@@ -10,8 +10,8 @@ import tempfile
 import constants
 # Loop progress bar || Resource from: https://github.com/tqdm/tqdm
 from tqdm import tqdm
-
 from scipy.spatial.distance import cdist
+
 
 
 def makeWindowBiggerOrDiscardFakeDetections(window, percentage):
@@ -23,7 +23,7 @@ def makeWindowBiggerOrDiscardFakeDetections(window, percentage):
     middleDeltaW = w * (percentage - 1) * 0.5
     middleDeltaH = h * (percentage - 1) * 0.5
 
-    squareGoodAspectRatio = True if (0.8 < w / h < 1.2) else False
+    squareGoodAspectRatio = True if (0.8 < w / h < 1.20) else False
     if squareGoodAspectRatio:
 
         x1 = x1 - middleDeltaW if x1 - middleDeltaW > 0 else 0
@@ -31,18 +31,13 @@ def makeWindowBiggerOrDiscardFakeDetections(window, percentage):
         x2 = x2 + middleDeltaW if x2 + middleDeltaW > 0 else 0
         y2 = y2 + middleDeltaH if y2 + middleDeltaH > 0 else 0
 
-        return x1, y1, x2, y2
+        return int(x1), int(y1), int(x2), int(y2)
     else:
         return None
 
 
-def drawWindowsOnImage(windowsCoords, image):
-    x1, y1, x2, y2 = windowsCoords
-    return cv2.rectangle(image, (x1, y1), (x2, y2), (255, 0, 0), 1)
-
-
 def cropImageByCoords(coords, image):
-    x1, y1, x2, y2 = np.asarray(coords).astype(int)
+    x1, y1, x2, y2 = coords
     return image[y1:y2, x1:x2]
 
 
@@ -60,6 +55,12 @@ def calculateHistAndNormalize(image):
     return cv2.normalize(imageHist, imageHist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
 
 
+def meanCoods(coordsA, coordsB):
+    x1A, y1A, x2A, y2A = coordsA
+    x1B, y1B, x2B, y2B = coordsB
+    return (x1A + x1B) // 2, (y1A + y1B) // 2, (x2A + x2B) // 2, (y2A + y2B) // 2
+
+
 def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance):
     deletions = []
     if detections:
@@ -67,13 +68,13 @@ def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance):
 
             """ Use histogram comparison between two images || resource from: 
                     https://docs.opencv.org/3.4/d8/dc8/tutorial_histogram_comparison.html """
-            similarity = cv2.compareHist(calculateHistAndNormalize(image), calculateHistAndNormalize(detection),
+            similarity = cv2.compareHist(calculateHistAndNormalize(image[0]), calculateHistAndNormalize(detection[0]),
                                          cv2.HISTCMP_CORREL)
 
             if similarity > tolerance:
                 deletions.append(detection)
-            elif 0.45 <= similarity <= tolerance:
-                image = cv2.addWeighted(image, 0.5, detection, 0.5, 0.0)
+            elif 0.75 <= similarity <= tolerance:
+                image = (cv2.addWeighted(image[0], 0.5, detection[0], 0.5, 0.0), meanCoods(image[1], detection[1]))
                 deletions.append(detection)
 
     return image, deletions
@@ -81,10 +82,9 @@ def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance):
 
 def getElementIndexFromList(l, element):
     # Consider "l" contains "element"
-
     index = 0
     for x in l:
-        if np.array_equal(x, element):
+        if np.array_equal(x[0], element):
             return index
         index += 1
 
@@ -96,50 +96,78 @@ def cleanDuplicatedDetections(imageDetections):
         image, deletions = checkIfImageIsDuplicatedOrMergeSimilarOnes(image, cleanDetections, 0.85)
         if deletions:
             for deletedImage in deletions:
-                cleanDetections.pop(getElementIndexFromList(cleanDetections, deletedImage))
+                cleanDetections.pop(getElementIndexFromList(cleanDetections, deletedImage[0]))
 
         cleanDetections.append(image)
-
-        plt.imshow(image)
-        plt.show()
 
     return cleanDetections
 
 
-def MSERTrafficSignDetector(image, mser):
+def createImageWithWindows(image, windowsBorders):
+    for detectedImage in windowsBorders:
+        x1, y1, x2, y2 = detectedImage[1]
+        image = cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 1)
+
+    return image
+
+
+def detectSignsOnDirectory(path, mser):
+    directoryDetections = []
+    numberOfDetections = []
+    imagesWithWindows = []
+    for file in tqdm(os.listdir(path)):
+        if not file.endswith('.txt'):
+            detections = MSERTrafficSignDetector(cv2.imread(path + '/' + file), mser, file)
+            directoryDetections.append(detections)
+            numberOfDetections.append((file, len(detections)))
+            image = createImageWithWindows(cv2.imread(path + '/' + file), detections)
+            imagesWithWindows.append((file, image))
+
+    sleep(0.02)
+    return directoryDetections, numberOfDetections, imagesWithWindows
+
+
+def MSERTrafficSignDetector(image, mser, file):
     modifiedImage = grayAndEnhanceContrast(image)
-    # showImage('Original image', modifiedImage)
 
     windowsBorders = mser.detectRegions(modifiedImage)[1]
 
     croppedImageDetections = []
-    i = 0
     for window in windowsBorders:
-
-        # i += 1
-        # print(i)
-        #
-        # # if i == 264:
-        # #     print('error')
 
         windowCords = makeWindowBiggerOrDiscardFakeDetections(window, 1.30)
         if windowCords is not None:
-            croppedImageDetections.append(cv2.resize(cropImageByCoords(windowCords, image), (25, 25)))
+            croppedImageDetections.append(
+                (cv2.resize(cropImageByCoords(windowCords, image), (25, 25)), windowCords, file))
 
     croppedImageDetections = cleanDuplicatedDetections(croppedImageDetections)
 
     return croppedImageDetections
 
 
+# Gamma correction for enhance exposure || Resource from:
+# https://lindevs.com/apply-gamma-correction-to-an-image-using-opencv/
+def gammaCorrection(src, gamma):
+    invGamma = 1 / gamma
+
+    table = [((i / 255) ** invGamma) * 255 for i in range(256)]
+    table = np.array(table, np.uint8)
+
+    return cv2.LUT(src, table)
+
+  
 def grayAndEnhanceContrast(image):
     # Img turn gray
+
     grayImage = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    blurImage = cv2.GaussianBlur(grayImage, (7, 7), 0)
-    clahe = cv2.createCLAHE(clipLimit=10, tileGridSize=(1, 1))
-    claheImage = clahe.apply(blurImage)
-    contrastAndBrightnessCorrectionImage = cv2.convertScaleAbs(claheImage, alpha=3, beta=-500)
-    # threshImage = cv2.adaptiveThreshold(new_image, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 29, -4)
-    return contrastAndBrightnessCorrectionImage
+    clahe = cv2.createCLAHE(clipLimit=2)
+    claheImage = clahe.apply(grayImage)
+    blurImage = cv2.GaussianBlur(claheImage, (3, 3), 0)
+    imageGammaCorrection = gammaCorrection(blurImage, 2)
+
+    result = imageGammaCorrection
+
+    return result
 
 
 # Color filtering using HSV || Resource from: https://www.geeksforgeeks.org/filter-color-with-opencv/
@@ -205,6 +233,7 @@ def calculateMeanMask():
         signalsMasksRed.append((getColorMaskRedOrBlue(mask, 'r'), constants.SIGNALLIST[namesListPosition]))
 
         sleep(0.01)
+        
     return signalsMasksRed, signalsMasksBlue
 
 
@@ -264,19 +293,447 @@ def calculateScoreBetweenMatrixs(matrix1, matrix2):
             return round((2 * truePositives) / ((2 * truePositives) + falsePositives + falseNegatives), 2)
 
 
-def showImage(title, image):
-    cv2.imshow(title, image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+def detectionsMaskCorrelation(detections, masksDir):
+    raise TypeError("No está definido el comportamiento de esta función")
+
+# detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
+def createDetectionsStrings(detections):
+    detectionsStrings = []
+    for detection in detections:
+        filename, x1, y1, x2, y2, signType, score = detection
+        detectionsStrings.append(
+            filename.split(".", 1)[0] + ".ppm;" + x1 + ";" + y1 + ";" + x2 + ";" + y2 + ";" + signType + ";" + score)
+    return detectionsStrings
 
 
-def main():
-    path = 'test_alumnos_jpg'
-    files = os.listdir(path)
-    for file in files:
-        if not file.endswith('.txt'):
-            print(file)
-        detections = MSERTrafficSignDetector(cv2.imread(path + '/' + file))
+def calculateSignType(signType):
+    prohibicion = ['00', '01', '02', '03', '04', '05', '07', '08', '09', '10', '15', '16']
+    peligro = ['11', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31']
+    stop = ['14']
+    direccionProhibida = ['17']
+    cedaPaso = ['13']
+    direccionObligatoria = ['38']
+
+    if signType in prohibicion:
+        return 1
+    elif signType in peligro:
+        return 2
+    elif signType in stop:
+        return 3
+    elif signType in direccionProhibida:
+        return 4
+    elif signType in cedaPaso:
+        return 5
+    elif signType in direccionObligatoria:
+        return 6
+
+
+def getResultsOnFile(fileName, detections, realResults):
+    detectionsOnFile = []
+    realResultsOnFile = []
+
+    for detection in detections:
+        if detection[0].split(".", 1)[0] == fileName.split(".", 1)[0]:
+            detectionsOnFile.append(detection)
+
+    for realResult in realResults:
+        if realResult[0].split(".", 1)[0] == fileName.split(".", 1)[0]:
+            realResultsOnFile.append(realResult)
+
+    return detectionsOnFile, realResultsOnFile
+
+
+def appendResultsByTypeOnFile(resultsOnFile, resultsProhibicionOnFile, resultsPeligroOnFile, resultsStopOnFile,
+                              resultsDirProhOnFile, resultsCedaPasoOnFile, resultsDirObligOnFile):
+    for resultOnFile in resultsOnFile:
+        if resultOnFile[5] == 1:
+            resultsProhibicionOnFile.append(resultOnFile)
+        elif resultOnFile[5] == 2:
+            resultsPeligroOnFile.append(resultOnFile)
+        elif resultOnFile[5] == 3:
+            resultsStopOnFile.append(resultOnFile)
+        elif resultOnFile[5] == 4:
+            resultsDirProhOnFile.append(resultOnFile)
+        elif resultOnFile[5] == 5:
+            resultsCedaPasoOnFile.append(resultOnFile)
+        else:
+            resultsDirObligOnFile.append(resultOnFile)
+
+    return [resultsProhibicionOnFile, resultsPeligroOnFile, resultsStopOnFile,
+            resultsDirProhOnFile, resultsCedaPasoOnFile, resultsDirObligOnFile]
+
+
+def getResultsByTypeOnFile(detectionsOnFile, realResultsOnFile):
+    detectionsProhibicionOnFile = []
+    detectionsPeligroOnFile = []
+    detectionsStopOnFile = []
+    detectionsDirProhOnFile = []
+    detectionsCedaPasoOnFile = []
+    detectionsDirObligOnFile = []
+
+    realResultsProhibicionOnFile = []
+    realResultsPeligroOnFile = []
+    realResultsStopOnFile = []
+    realResultsDirProhOnFile = []
+    realResultsCedaPasoOnFile = []
+    realResultsDirObligOnFile = []
+
+    detectionsByTypeOnFile = appendResultsByTypeOnFile(detectionsOnFile, detectionsProhibicionOnFile,
+                                                       detectionsPeligroOnFile,
+                                                       detectionsStopOnFile,
+                                                       detectionsDirProhOnFile,
+                                                       detectionsCedaPasoOnFile,
+                                                       detectionsDirObligOnFile)
+
+    realResultsByTypeOnFile = appendResultsByTypeOnFile(realResultsOnFile, realResultsProhibicionOnFile,
+                                                        realResultsPeligroOnFile,
+                                                        realResultsStopOnFile,
+                                                        realResultsDirProhOnFile,
+                                                        realResultsCedaPasoOnFile,
+                                                        realResultsDirObligOnFile)
+
+    return detectionsByTypeOnFile, realResultsByTypeOnFile
+
+
+def checkIfDetectionByTypeOnFileIsCorrectIncorrectDuplicated(detectionByTypeOnFile, realResultsByTypeOnFile,
+                                                             checkedRealResults):
+    finalCosineSimilarity = -math.inf
+    realResultSimilar = None
+    for realResultByTypeOnFile in realResultsByTypeOnFile:
+        realResultCoords = [realResultByTypeOnFile[1], realResultByTypeOnFile[2], realResultByTypeOnFile[3],
+                            realResultByTypeOnFile[4]]
+        detectionCoords = [detectionByTypeOnFile[1], detectionByTypeOnFile[2], detectionByTypeOnFile[3],
+                           detectionByTypeOnFile[4]]
+        cosineSimilarity = np.dot(realResultCoords, detectionCoords) / (
+                    np.linalg.norm(realResultCoords) * np.linalg.norm(detectionCoords))
+        if cosineSimilarity > finalCosineSimilarity:
+            finalCosineSimilarity = cosineSimilarity
+            realResultSimilar = realResultByTypeOnFile
+
+    if finalCosineSimilarity > 0.85:
+        return "correct", checkedRealResults.add(realResultSimilar)
+    elif finalCosineSimilarity > 0.85 and realResultSimilar in checkedRealResults:
+        return "duplicated"
+    else:
+        return "incorrect"
+
+
+def getCorrectsAndIncorrectsByTypeOnFile(detectionsByTypeOnFile, realResultsByTypeOnFile):
+    checkedRealResults = set()
+
+    correctDetections = 0
+    incorrectDetections = 0
+    duplicatedDetections = 0
+
+    if detectionsByTypeOnFile and realResultsByTypeOnFile:
+        for detectionByTypeOnFile in detectionsByTypeOnFile:
+            checkResult, checkedRealResults = checkIfDetectionByTypeOnFileIsCorrectIncorrectDuplicated(
+                detectionByTypeOnFile, realResultsByTypeOnFile, checkedRealResults)
+            if checkResult == "correct":
+                correctDetections += 1
+            elif checkResult == "duplicated":
+                duplicatedDetections += 1
+            else:
+                incorrectDetections += 1
+    elif realResultsByTypeOnFile:
+        incorrectDetections = len(realResultsByTypeOnFile)
+    elif detectionsByTypeOnFile:
+        incorrectDetections = len(detectionsByTypeOnFile)
+
+    return correctDetections, incorrectDetections
+
+
+# generateStatistics -> (list detectionsPerFileByType[str fileName,
+# list detectionsByTypeOnFile[(str type , int totalCorrectByTypeOnFile ,
+# int totalIncorrectByTypeOnFile, int expectedTotalCorrectByTypeOnFile) ,
+# int totalCorrectOnFile , int totalIncorrectOnFile, int expectedTotalCorrectOnFile]]
+# ; list totalDetectionsByType[(str type , int totalCorrectByType ,
+# int totalIncorrectByType , int expectedTotalCorrectByType)]; int totalCorrect ; int
+# totalIncorrect ; expectedTotalCorrect)
+
+# detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
+
+
+def generateStatistics(detections, realResultsFilePath, numberDetections):
+    realResults = []
+    file = open(realResultsFilePath, "r")
+    for line in file:
+        filename, x1, y1, x2, y2, signType = line.split(';')
+        realResults.append((filename, int(x1), int(y1), int(x2), int(y2), calculateSignType(signType)))
+
+    detectionsPerFileByType = []
+    totalDetectionsByType = {
+        "prohibicion": (0, 0, 0),
+        "peligro": (0, 0, 0),
+        "stop": (0, 0, 0),
+        "direccionProhibida": (0, 0, 0),
+        "cedaPaso": (0, 0, 0),
+        "direccionObligatoria": (0, 0, 0)
+    }
+    totalCorrect = 0
+    totalIncorrect = 0
+    expectedTotalCorrect = 0
+    for fileNameAndNumber in numberDetections:
+        detectionsOnFile, realResultsOnFile = getResultsOnFile(fileNameAndNumber[0], detections, realResults)
+        detectionsPerTypeOnFile, realResultsPerTypeOnFile = getResultsByTypeOnFile(detectionsOnFile, realResultsOnFile)
+
+        totalCorrectOnFile = 0
+        totalIncorrectOnFile = 0
+        expectedTotalCorrectOnFile = len(realResultsPerTypeOnFile)
+
+        signalTypeIndex = -1
+        detectionsByTypeOnFileResults = []
+        for detectionsByTypeOnFile, realResultsByTypeOnFile in detectionsPerTypeOnFile, realResultsPerTypeOnFile:
+            signalTypeIndex += 1
+
+            totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile = getCorrectsAndIncorrectsByTypeOnFile(
+                detectionsByTypeOnFile, realResultsByTypeOnFile)
+            detectionsByTypeOnFileResults.append((constants.SIGNALLIST[signalTypeIndex], totalCorrectByTypeOnFile,
+                                                  totalIncorrectByTypeOnFile, len(realResultsByTypeOnFile)))
+
+            totalCorrectOnFile += totalCorrectByTypeOnFile
+            totalIncorrectOnFile += totalIncorrectByTypeOnFile
+
+        for detectionByTypeOnFileResults in detectionsByTypeOnFileResults:
+            correct, incorrect, expectedCorrect = totalDetectionsByType[detectionByTypeOnFileResults[0]]
+            correct += detectionByTypeOnFileResults[1]
+            incorrect += detectionByTypeOnFileResults[2]
+            expectedCorrect += detectionByTypeOnFileResults[3]
+            totalDetectionsByType[detectionByTypeOnFileResults[0]] = (correct, incorrect, expectedCorrect)
+
+        detectionsPerFileByType.append((fileNameAndNumber[0], detectionsByTypeOnFileResults, totalCorrectOnFile,
+                                        totalIncorrectOnFile, expectedTotalCorrectOnFile))
+
+        totalDetectionsByType = list(totalDetectionsByType.items())
+
+        for totalDetectionByType in totalDetectionsByType:
+            totalCorrect += totalDetectionByType[1]
+            totalIncorrect += totalDetectionByType[2]
+            expectedTotalCorrect += totalDetectionByType[3]
+
+    return detectionsPerFileByType, totalDetectionsByType, totalCorrect, totalIncorrect, expectedTotalCorrect
+
+
+def test(trainPath, testPath, MSERValues):
+    print("\nVa a comenzar el test de detección de señales de tráfico...")
+    print("\nGenerando mascaras a partir de imágenes de entrenamiento... \n(" + trainPath + ")")
+
+    try:
+        masksDir = calculateMeanMask()
+    except Exception as e:
+        print("Ha ocurrido un problema generando las máscaras :(")
+        print("\n"
+              "------------------------------------------------------------\n"
+              "                        TEST FALLIDO                        \n"
+              "------------------------------------------------------------\n")
+        print(e)
+    else:
+        print("Máscaras generadas con éxito en", masksDir)
+
+        print("\nIniciando detector MSER...")
+
+        try:
+            delta, minA, maxA, maxVar = MSERValues
+
+            delta = delta
+            minArea = minA
+            maxArea = maxA
+            maxVariation = maxVar
+
+            mser = cv2.MSER_create(delta=delta, min_area=minArea, max_area=maxArea, max_variation=maxVariation)
+        except Exception as e:
+            print("Ha ocurrido un error generando el detector :(")
+            print("\n"
+                  "------------------------------------------------------------\n"
+                  "                        TEST FALLIDO                        \n"
+                  "------------------------------------------------------------\n")
+            print(e)
+        else:
+            print("Se ha creado con éxito el detector MSER con parámetros:\n")
+            print("   DELTA:", delta)
+            print("   MIN AREA:", minArea)
+            print("   MAX AREA:", maxArea)
+            print("   MAX VARIATION:", maxVariation)
+
+            print(
+                "\nVa a comenzar la detección de señales de tráfico en las imágenes de test... \n(" + testPath + ")\n")
+            print("Analizando y extrayendo regiones de interés...")
+
+            try:
+                detections, numDetections, imagesWithDetections = detectSignsOnDirectory(testPath, mser)
+            except Exception as e:
+                print("Ha ocurrido un error en el proceso de detección de señales :(")
+                print("\n"
+                      "------------------------------------------------------------\n"
+                      "                        TEST FALLIDO                        \n"
+                      "------------------------------------------------------------\n")
+                print(e)
+            else:
+                resultImagesPath = "resultado_imgs"  # _d" + str(delta) + "_mv" + str(maxVar)  # Borrar después de testing
+
+                print("\nEl proceso ha concluido con éxito, las imágenes de test con sus respectivas detecciones (con "
+                      "eliminación de repeticiones) serán "
+                      "guardadas en", resultImagesPath)
+
+                print("\nGenerando resultados...")
+
+                try:
+                    if os.path.isdir(resultImagesPath):
+                        shutil.rmtree(resultImagesPath)
+
+                    os.mkdir(resultImagesPath)
+
+                    for file, image in tqdm(imagesWithDetections):
+                        cv2.imwrite(resultImagesPath + "/" + file, image)
+                        sleep(0.02)
+                except Exception as e:
+                    print("Ha ocurrido un error guardando los archivos :(")
+                    print("\n"
+                          "------------------------------------------------------------\n"
+                          "                        TEST FALLIDO                        \n"
+                          "------------------------------------------------------------\n")
+                    print(e)
+                else:
+                    print(
+                        "\nA continuación se listarán las detecciones obtenidas, con eliminación de repeticiones, "
+                        "por cada "
+                        "archivo en",
+                        testPath + "\n")
+
+                    total = 0
+                    for file, number in numDetections:
+                        print(file, ".......", number, "   detecciones" if number < 10 else "  detecciones")
+                        total += number
+                    print("Total ...........", total, "detecciones")
+
+                    print("\nVa a comenzar el proceso de filtrado por correlación de máscaras almacenadas en el "
+                          "directorio"
+                          , trainPath + "...\n")
+                    print("Realizando el filtrado...")
+                    try:
+                        # detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
+                        detections = detectionsMaskCorrelation(detections, masksDir)
+                    except Exception as e:
+                        print("Ha ocurrido un error en el proceso de correlación de máscaras :(")
+                        print("\n"
+                              "------------------------------------------------------------\n"
+                              "                        TEST FALLIDO                        \n"
+                              "------------------------------------------------------------\n")
+                        print(e)
+                    else:
+                        finalDetectionsPath = "resultado.txt"
+
+                        print("\nEl proceso ha concluido con éxito y las detecciones filtradas serán guardadas en el "
+                              "archivo", finalDetectionsPath + ". La codificación de los resultados es la siguiente:")
+                        print("nombre_archivo.ppm;x1_coord;y1_coord;x2_coord;y2_coord;tipo_señal;score\n")
+                        print("  x1_coord  ===>  coordenada x de la esquina superior izquierda de la detección\n"
+                              "  y1_coord  ===>  coordenada y de la esquina superior izquierda de la detección\n"
+                              "  x2_coord  ===>  coordenada x de la esquina inferior derecha de la detección\n"
+                              "  y2_coord  ===>  coordenada y de la esquina inferior derecha de la detección\n"
+                              "tipo_señal  ===>  1 -> Obligación      2 -> Peligro        3 -> Stop\n"
+                              "                  4 -> dir Prohibida   5 -> ceda el paso   6 -> dir obligatoria\n"
+                              "     score  ===>  Puntuación de acierto en la detección\n")
+
+                        print("Generando archivo de resultados...")
+
+                        try:
+                            detectionsStrings = createDetectionsStrings(detections)
+                            file = open(finalDetectionsPath, "w")
+                            for detection in detectionsStrings:
+                                file.write(detection + "\n")
+                            file.close()
+                        except Exception as e:
+                            print("Ha ocurrido un error en el proceso de creación del archivo de resultados :(")
+                            print("\n"
+                                  "------------------------------------------------------------\n"
+                                  "                        TEST FALLIDO                        \n"
+                                  "------------------------------------------------------------\n")
+                            print(e)
+                        else:
+                            realResultsFilePath = "test_alumnos_jpg/gt.txt"
+                            print("\nEl archivo de resultados ha sido generado correctamente")
+                            print(
+                                "\nFinalmente van a mostrarse las estadísticas de funcionamiento del programa a "
+                                "partir del fichero de resultados reales",
+                                realResultsFilePath)
+                            try:
+                                print("\nGenerando estadísticas...")
+
+                                # generateStatistics -> (list detectionsPerFileByType[str fileName,
+                                # list detectionsByTypeOnFile[(str type , int totalCorrectByTypeOnFile ,
+                                # int totalIncorrectByTypeOnFile, int expectedTotalCorrectByTypeOnFile) ,
+                                # int totalCorrectOnFile , int totalIncorrectOnFile, int expectedTotalCorrectOnFile]]
+                                # ; list totalDetectionsByType[(str type , int totalCorrectByType ,
+                                # int totalIncorrectByType , int expectedTotalCorrectByType)]; int totalCorrect ; int
+                                # totalIncorrect ; expectedTotalCorrect)
+
+                                # AÑADIR DUPLICADOS -> NO CONTABILIZARLOS NI EN ACIERTOS NI EN FALLOS
+
+                                statisticsResults = generateStatistics(detections, realResultsFilePath, numDetections)
+                            except Exception as e:
+                                print("Ha ocurrido un error generando las estadísticas :(")
+                                print("\n"
+                                      "------------------------------------------------------------\n"
+                                      "                        TEST FALLIDO                        \n"
+                                      "------------------------------------------------------------\n")
+                                print(e)
+                            else:
+                                print("\nLas estadísticas de funcionamiento son las siguientes:")
+
+                                detectionsPerFileByType, totalDetectionsByType, totalCorrect, totalIncorrect, expectedTotalCorrect = statisticsResults
+
+                                print("\n"
+                                      "---------------------------------\n"
+                                      "     DETECCIONES POR ARCHIVO     \n"
+                                      "---------------------------------\n")
+                                for detectionPerFile in detectionsPerFileByType:
+                                    fileName, detectionsByTypeOnFile, totalCorrectOnFile, totalIncorrectOnFile, expectedTotalCorrectOnFile = detectionPerFile
+                                    print(fileName, "...............................")
+                                    print("                TOTAL CORRECTAS:", totalCorrectOnFile)
+                                    print("              TOTAL INCORRECTAS:", totalIncorrectOnFile)
+                                    print("        VALOR CORRECTO ESPERADO:", expectedTotalCorrectOnFile)
+                                    print("                TASA DE ACIERTO:",
+                                          totalCorrectOnFile / expectedTotalCorrectOnFile)
+                                    for detectionByTypeOnFile in detectionsByTypeOnFile:
+                                        signType, totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile, expectedTotalCorrectByTypeOnFile = detectionByTypeOnFile
+                                        print("\n            " + signType + ":..................................")
+                                        print("                                  TOTAL CORRECTAS:",
+                                              totalCorrectByTypeOnFile)
+                                        print("                                TOTAL INCORRECTAS:",
+                                              totalIncorrectByTypeOnFile)
+                                        print("                          VALOR CORRECTO ESPERADO:",
+                                              expectedTotalCorrectByTypeOnFile)
+                                        print("                                  TASA DE ACIERTO:",
+                                              totalCorrectByTypeOnFile / expectedTotalCorrectByTypeOnFile)
+
+                                print("\n"
+                                      "---------------------------------------\n"
+                                      "     DETECCIONES POR TIPO DE SEÑAL     \n"
+                                      "---------------------------------------\n")
+                                for detectionByType in totalDetectionsByType:
+                                    signType, totalCorrectByType, totalIncorrectByType, expectedTotalCorrectByType = detectionByType
+                                    print(signType, "...............................")
+                                    print("                TOTAL CORRECTAS:", totalCorrectByType)
+                                    print("              TOTAL INCORRECTAS:", totalIncorrectByType)
+                                    print("        VALOR CORRECTO ESPERADO:", expectedTotalCorrectByType)
+                                    print("                TASA DE ACIERTO:",
+                                          totalCorrectByType / expectedTotalCorrectByType)
+
+                                print("\n"
+                                      "-----------------------------\n"
+                                      "     DETECCIONES TOTALES     \n"
+                                      "-----------------------------\n")
+                                print("TOTAL CORRECTAS:", totalCorrect)
+                                print("TOTAL INCORRECTAS:", totalIncorrect)
+                                print("VALOR CORRECTO ESPERADO:", expectedTotalCorrect)
+                                print("TASA DE ACIERTO:", totalCorrect / expectedTotalCorrect)
+
+                                print("\n"
+                                      "------------------------------------------------------------\n"
+                                      "                  TEST TERMINADO CON ÉXITO                  \n"
+                                      "------------------------------------------------------------\n")
+
+                                return totalCorrect / expectedTotalCorrect  # Borrar después de testing
 
 # if __name__ == "__main__":
 #     parser = argparse.ArgumentParser(
@@ -292,4 +749,27 @@ def main():
 #
 #     test()
 
-# test("train_jpg", "test_alumnos_jpg")
+def getTotal(e):
+    return e[2]
+
+
+def multiTest():
+    delta = np.arange(7, 19, 1)
+    variation = np.arange(0.05, 1.05, 0.05)
+
+    totals = []
+    for d in delta:
+        for v in variation:
+            total = test("train_jpg", "test_alumnos_jpg", (d, 200, 2000, v))
+            totals.append((d, v, total))
+
+    totals.sort(key=getTotal, reverse=True)
+    for t in totals:
+        print(t)
+
+    print("\n\n\nVALOR ÓPTIMO!!!!!:", totals[0])
+
+
+test("train_jpg", "test_alumnos_jpg", (25, 200, 2000, 1))
+
+# multiTest()
