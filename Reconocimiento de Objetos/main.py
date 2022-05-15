@@ -38,6 +38,11 @@ def LDASorter(directoryDetections,image):
 
     return predict_lda
 
+#https://www.desarrollo-web-br-bd.com/es/python/obtener-caracteristicas-de-imagen-hog-de-opencv-python/972776975/
+#https://docs.opencv.org/2.4/modules/gpu/doc/object_detection.html
+def HOG():
+    hog = cv2.HOGDescriptor()
+
 # ----------------------- MAKS FUNCTIONS -----------------------
 
 
