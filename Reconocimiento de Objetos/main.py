@@ -21,12 +21,22 @@ import cv2
 import numpy as np
 from time import sleep
 from tqdm import tqdm  # Loop progress bar || Resource from: https://github.com/tqdm/tqdm
-
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 
 # -----------------------------------
 #              FUNCTIONS
 # -----------------------------------
 
+#https://stackoverflow.com/questions/31107945/how-to-perform-prediction-with-lda-linear-discriminant-in-scikit-learn
+#https://stackabuse.com/implementing-lda-in-python-with-scikit-learn/
+#https://scikit-learn.org/0.16/modules/generated/sklearn.lda.LDA.html
+#LDA + BAYES
+def LDASorter(directoryDetections,image):
+    lda = LinearDiscriminantAnalysis()
+    lda = lda.fit(image, directoryDetections) #se usa fit para ajustar el modelo de deteccion
+    predict_lda = lda.predict(image) #la probabilidad de que pertenezca a cada señal
+
+    return predict_lda
 
 # ----------------------- MAKS FUNCTIONS -----------------------
 
