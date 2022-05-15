@@ -316,7 +316,6 @@ def calculateScoreBetweenMatrixs(matrix1, matrix2):
             return round((2 * truePositives) / ((2 * truePositives) + falsePositives + falseNegatives), 2)
 
 
-# detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
 def createDetectionsStrings(detections):
     detectionsStrings = []
     for detection in detections:
@@ -481,17 +480,6 @@ def totalLen(l):
     for x in l:
         total += len(x)
     return total
-
-
-# generateStatistics -> (list detectionsPerFileByType[str fileName,
-# list detectionsByTypeOnFile[(str type , int totalCorrectByTypeOnFile ,
-# int totalIncorrectByTypeOnFile, int expectedTotalCorrectByTypeOnFile) ,
-# int totalCorrectOnFile , int totalIncorrectOnFile, int expectedTotalCorrectOnFile]]
-# ; list totalDetectionsByType[(str type , int totalCorrectByType ,
-# int totalIncorrectByType , int expectedTotalCorrectByType)]; int totalCorrect ; int
-# totalIncorrect ; expectedTotalCorrect)
-
-# detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
 
 
 def generateStatistics(detections, realResultsFilePath, numberDetections):
@@ -723,16 +711,6 @@ def test(trainPath, testPath, MSERValues):
                             try:
                                 print("\nGenerando estadísticas...")
 
-                                # generateStatistics -> (list detectionsPerFileByType[str fileName,
-                                # list detectionsByTypeOnFile[(str type , int totalCorrectByTypeOnFile ,
-                                # int totalIncorrectByTypeOnFile, int expectedTotalCorrectByTypeOnFile) ,
-                                # int totalCorrectOnFile , int totalIncorrectOnFile, int expectedTotalCorrectOnFile]]
-                                # ; list totalDetectionsByType[(str type , int totalCorrectByType ,
-                                # int totalIncorrectByType , int expectedTotalCorrectByType)]; int totalCorrect ; int
-                                # totalIncorrect ; expectedTotalCorrect)
-
-                                # AÑADIR DUPLICADOS -> NO CONTABILIZARLOS NI EN ACIERTOS NI EN FALLOS
-
                                 statisticsResults = generateStatistics(detections, realResultsFilePath, numDetections)
                             except Exception as e:
                                 print("Ha ocurrido un error generando las estadísticas :(")
@@ -809,9 +787,6 @@ def test(trainPath, testPath, MSERValues):
                                       "                  TEST TERMINADO CON ÉXITO                  \n"
                                       "------------------------------------------------------------\n")
 
-                                return score(totalCorrect, totalIncorrect,
-                                             totalNonDetected)  # Borrar después de testing
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -849,28 +824,3 @@ if __name__ == "__main__":
             "                          (Cada uno de los parámetros irá separado por '_')\n"
             "                          (Tenga en cuenta que MIN AREA >= MAX AREA)\n\n"
             "         Ejemplo de uso: MSER_5_200_3000_0.45")
-
-
-def getTotal(e):
-    return e[2]
-
-
-def multiTest():
-    delta = np.arange(1, 21, 1)
-    variation = np.arange(0.05, 1.05, 0.05)
-
-    totals = []
-    for d in delta:
-        for v in variation:
-            total = test("train_jpg", "test_alumnos_jpg", (d, 200, 2000, v))
-            totals.append((d, v, total))
-
-    totals.sort(key=getTotal, reverse=True)
-    for t in totals:
-        print(t)
-
-    print("\n\n\nVALOR ÓPTIMO!!!!!:", totals[0])
-
-# test("train_jpg", "test_alumnos_jpg", (8, 200, 2000, 0.7))
-
-# multiTest()
