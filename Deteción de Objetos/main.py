@@ -3,14 +3,14 @@ import math
 import os
 import shutil
 from time import sleep
+
 import cv2
 import numpy as np
-from matplotlib import pyplot as plt
-import tempfile
-import constants
 # Loop progress bar || Resource from: https://github.com/tqdm/tqdm
 from tqdm import tqdm
-from scipy.spatial.distance import cdist
+
+import constants
+
 
 def makeWindowBiggerOrDiscardFakeDetections(window, percentage):
     x1, y1, w, h = window
@@ -59,20 +59,32 @@ def meanCoods(coordsA, coordsB):
     return (x1A + x1B) // 2, (y1A + y1B) // 2, (x2A + x2B) // 2, (y2A + y2B) // 2
 
 
-def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance):
+def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance, isSimilarityByEuclideanDistanceON):
     deletions = []
     if detections:
         for detection in detections:
+            if not isSimilarityByEuclideanDistanceON:
+                # Use histogram comparison between two images || resource from:
+                # https://docs.opencv.org/3.4/d8/dc8/tutorial_histogram_comparison.html
+                similarity = cv2.compareHist(calculateHistAndNormalize(image[0]),
+                                             calculateHistAndNormalize(detection[0]),
+                                             cv2.HISTCMP_CORREL)
+            else:
+                imageCoords = image[1]
+                detectionCoords = detection[1]
 
-            # Use histogram comparison between two images || resource from:
-            # https://docs.opencv.org/3.4/d8/dc8/tutorial_histogram_comparison.html
-            similarity = cv2.compareHist(calculateHistAndNormalize(image[0]), calculateHistAndNormalize(detection[0]),
-                                         cv2.HISTCMP_CORREL)
+                similarity = np.sqrt(
+                    EuclDSimilarity(imageCoords[0], imageCoords[1], detectionCoords[0],
+                                    detectionCoords[1]) * EuclDSimilarity(imageCoords[2], imageCoords[3],
+                                                                          detectionCoords[2],
+                                                                          detectionCoords[3]))
 
             if similarity > tolerance:
                 deletions.append(detection)
-            elif 0.75 <= similarity <= tolerance:
-                image = (cv2.addWeighted(image[0], 0.5, detection[0], 0.5, 0.0), meanCoods(image[1], detection[1]), detection[2])
+            elif tolerance * 0.8823 <= similarity <= tolerance:
+                image = (
+                    cv2.addWeighted(image[0], 0.5, detection[0], 0.5, 0.0), meanCoods(image[1], detection[1]),
+                    detection[2])
                 deletions.append(detection)
 
     return image, deletions
@@ -87,11 +99,12 @@ def getElementIndexFromList(l, element):
         index += 1
 
 
-def cleanDuplicatedDetections(imageDetections):
+def cleanDuplicatedDetections(imageDetections, isSimilarityByEuclideanDistanceON, tolerance):
     cleanDetections = []
 
     for image in imageDetections:
-        image, deletions = checkIfImageIsDuplicatedOrMergeSimilarOnes(image, cleanDetections, 0.85)
+        image, deletions = checkIfImageIsDuplicatedOrMergeSimilarOnes(image, cleanDetections, tolerance,
+                                                                      isSimilarityByEuclideanDistanceON)
         if deletions:
             for deletedImage in deletions:
                 cleanDetections.pop(getElementIndexFromList(cleanDetections, deletedImage[0]))
@@ -133,14 +146,17 @@ def MSERTrafficSignDetector(image, mser, file):
     croppedImageDetections = []
     for window in windowsBorders:
 
-        windowCords = makeWindowBiggerOrDiscardFakeDetections(window, 1.30)
+        windowCords = makeWindowBiggerOrDiscardFakeDetections(window, 1.15)
         if windowCords is not None:
             if windowCords == (890, 476, 946, 524):
                 print("aqui")
             croppedImageDetections.append(
                 (cv2.resize(cropImageByCoords(windowCords, image), (25, 25)), windowCords, file))
 
-    croppedImageDetections = cleanDuplicatedDetections(croppedImageDetections)
+    # Clean duplicated images by pixel-similarity
+    croppedImageDetections = cleanDuplicatedDetections(croppedImageDetections, False, 0.85)
+    # Clean duplicated images by coordinates-similarity
+    croppedImageDetections = cleanDuplicatedDetections(croppedImageDetections, True, 0.95)
 
     return croppedImageDetections
 
@@ -155,7 +171,7 @@ def gammaCorrection(src, gamma):
 
     return cv2.LUT(src, table)
 
-  
+
 def grayAndEnhanceContrast(image):
     # Img turn gray
 
@@ -220,9 +236,10 @@ def calculateMeanMask():
         mask = np.zeros((25, 25, 3), np.uint8)
         first = True
         for singDir in signType:
-            signs = os.listdir('train_jpg/' + singDir)
+            signs = os.listdir(constants.TRAIN_PATH + '/' + singDir)
             for file in signs:
-                currentResizedImage = cv2.resize(cv2.imread('train_jpg/' + singDir + '/' + file), (25, 25))
+                currentResizedImage = cv2.resize(cv2.imread(constants.TRAIN_PATH + '/' + singDir + '/' + file),
+                                                 (25, 25))
                 if first:
                     mask = cv2.addWeighted(currentResizedImage, 1, mask, 0, 0.0)
                     first = False
@@ -233,7 +250,7 @@ def calculateMeanMask():
         signalsMasksRed.append((getColorMaskRedOrBlue(mask, 'r'), constants.SIGNALLIST[namesListPosition]))
 
         sleep(0.01)
-        
+
     return signalsMasksRed, signalsMasksBlue
 
 
@@ -253,7 +270,7 @@ def getSimilarSignalType(imageMask, signalsMasks):
     return finalScore, signalName
 
 
-def detectionsMaskCorrelation(detection, signalsMasksRed, signalsMasksBlue):
+def detectionsMaskCorrelation(detection, signalsMasksRed, signalsMasksBlue, tolerance):
     redHSVImageMask = getColorMaskRedOrBlue(detection[0], 'r')
     blueHSVImageMask = getColorMaskRedOrBlue(detection[0], 'b')
     scoreRed, signalIDRed = getSimilarSignalType(redHSVImageMask, signalsMasksRed)
@@ -261,9 +278,15 @@ def detectionsMaskCorrelation(detection, signalsMasksRed, signalsMasksBlue):
 
     x1, y1, x2, y2 = detection[1]
     if scoreRed > scoreBlue:
-        return detection[2], x1, y1, x2, y2, signalIDRed, scoreRed
+        if scoreRed > tolerance:
+            return detection[2], x1, y1, x2, y2, signalIDRed, scoreRed
+        else:
+            return None
     else:
-        return detection[2], x1, y1, x2, y2, signalIDBlue, scoreBlue
+        if scoreBlue > tolerance:
+            return detection[2], x1, y1, x2, y2, signalIDBlue, scoreBlue
+        else:
+            return None
 
 
 # based on recall and precision calculus || Resource from:
@@ -299,7 +322,8 @@ def createDetectionsStrings(detections):
     for detection in detections:
         filename, x1, y1, x2, y2, signType, score = detection
         detectionsStrings.append(
-            filename + ";" + str(x1) + ";" + str(y1) + ";" + str(x2) + ";" + str(y2) + ";" + str(signType) + ";" + str(score))
+            filename + ";" + str(x1) + ";" + str(y1) + ";" + str(x2) + ";" + str(y2) + ";" + str(signType) + ";" + str(
+                score))
     return detectionsStrings
 
 
@@ -395,24 +419,31 @@ def getResultsByTypeOnFile(detectionsOnFile, realResultsOnFile):
     return detectionsByTypeOnFile, realResultsByTypeOnFile
 
 
+def EuclDSimilarity(xA, yA, xB, yB):
+    euclDist = np.linalg.norm(np.array((xA, yA)) - np.array((xB, yB)))
+    return 1 / (1 + np.power(np.e,
+                             (((0.154 * np.power(euclDist, 1.2)) - 31.8) / (0.2 * euclDist)))) if euclDist > 0 else 1
+
+
 def checkIfDetectionByTypeOnFileIsCorrectIncorrectDuplicated(detectionByTypeOnFile, realResultsByTypeOnFile,
                                                              checkedRealResults):
-    finalPearsonSimilarity = -math.inf
+    finalEuclideanDistancesGeometricMean = -math.inf
     realResultSimilar = None
     for realResultByTypeOnFile in realResultsByTypeOnFile:
-        realResultCoords = [realResultByTypeOnFile[1], realResultByTypeOnFile[2], realResultByTypeOnFile[3],
-                            realResultByTypeOnFile[4]]
-        detectionCoords = [detectionByTypeOnFile[1], detectionByTypeOnFile[2], detectionByTypeOnFile[3],
-                           detectionByTypeOnFile[4]]
-        pearsonSimilarity = np.corrcoef(realResultCoords, detectionCoords)[0][1]
-        if pearsonSimilarity > finalPearsonSimilarity:
-            finalPearsonSimilarity = pearsonSimilarity
+        EuclideanDistancesGeometricMean = np.sqrt(
+            EuclDSimilarity(detectionByTypeOnFile[1], detectionByTypeOnFile[2], realResultByTypeOnFile[1],
+                            realResultByTypeOnFile[2]) * EuclDSimilarity(detectionByTypeOnFile[3],
+                                                                         detectionByTypeOnFile[4],
+                                                                         realResultByTypeOnFile[3],
+                                                                         realResultByTypeOnFile[4]))
+        if EuclideanDistancesGeometricMean > finalEuclideanDistancesGeometricMean:
+            finalEuclideanDistancesGeometricMean = EuclideanDistancesGeometricMean
             realResultSimilar = realResultByTypeOnFile
 
-    if finalPearsonSimilarity > 0.85:
+    if finalEuclideanDistancesGeometricMean > 0.85:
         checkedRealResults.add(realResultSimilar)
         return "correct", checkedRealResults
-    elif finalPearsonSimilarity > 0.85 and realResultSimilar in checkedRealResults:
+    elif finalEuclideanDistancesGeometricMean > 0.85 and realResultSimilar in checkedRealResults:
         return "duplicated", checkedRealResults
     else:
         return "incorrect", checkedRealResults
@@ -423,6 +454,7 @@ def getCorrectsAndIncorrectsByTypeOnFile(detectionsByTypeOnFile, realResultsByTy
 
     correctDetections = 0
     incorrectDetections = 0
+    nonDetected = 0
     duplicatedDetections = 0
 
     if detectionsByTypeOnFile and realResultsByTypeOnFile:
@@ -435,12 +467,13 @@ def getCorrectsAndIncorrectsByTypeOnFile(detectionsByTypeOnFile, realResultsByTy
                 duplicatedDetections += 1
             else:
                 incorrectDetections += 1
+        nonDetected += len(realResultsByTypeOnFile) - len(checkedRealResults)
     elif realResultsByTypeOnFile:
-        incorrectDetections = len(realResultsByTypeOnFile)
+        nonDetected = len(realResultsByTypeOnFile)
     elif detectionsByTypeOnFile:
         incorrectDetections = len(detectionsByTypeOnFile)
 
-    return correctDetections, incorrectDetections
+    return correctDetections, incorrectDetections, nonDetected
 
 
 def totalLen(l):
@@ -448,6 +481,7 @@ def totalLen(l):
     for x in l:
         total += len(x)
     return total
+
 
 # generateStatistics -> (list detectionsPerFileByType[str fileName,
 # list detectionsByTypeOnFile[(str type , int totalCorrectByTypeOnFile ,
@@ -458,8 +492,6 @@ def totalLen(l):
 # totalIncorrect ; expectedTotalCorrect)
 
 # detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
-
-
 
 
 def generateStatistics(detections, realResultsFilePath, numberDetections):
@@ -473,15 +505,16 @@ def generateStatistics(detections, realResultsFilePath, numberDetections):
 
     detectionsPerFileByType = []
     totalDetectionsByType = {
-        "prohibicion": (0, 0, 0),
-        "peligro": (0, 0, 0),
-        "stop": (0, 0, 0),
-        "direccionProhibida": (0, 0, 0),
-        "cedaPaso": (0, 0, 0),
-        "direccionObligatoria": (0, 0, 0)
+        "prohibicion": (0, 0, 0, 0),
+        "peligro": (0, 0, 0, 0),
+        "stop": (0, 0, 0, 0),
+        "direccionProhibida": (0, 0, 0, 0),
+        "cedaPaso": (0, 0, 0, 0),
+        "direccionObligatoria": (0, 0, 0, 0)
     }
     totalCorrect = 0
     totalIncorrect = 0
+    totalNonDetected = 0
     expectedTotalCorrect = 0
     for fileNameAndNumber in tqdm(numberDetections):
         detectionsOnFile, realResultsOnFile = getResultsOnFile(fileNameAndNumber[0], detections, realResults)
@@ -489,6 +522,7 @@ def generateStatistics(detections, realResultsFilePath, numberDetections):
 
         totalCorrectOnFile = 0
         totalIncorrectOnFile = 0
+        totalNonDetectedOnFile = 0
         expectedTotalCorrectOnFile = totalLen(realResultsPerTypeOnFile)
 
         signalTypeIndex = -1
@@ -496,37 +530,51 @@ def generateStatistics(detections, realResultsFilePath, numberDetections):
         for detectionsByTypeOnFile, realResultsByTypeOnFile in zip(detectionsPerTypeOnFile, realResultsPerTypeOnFile):
             signalTypeIndex += 1
 
-            totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile = getCorrectsAndIncorrectsByTypeOnFile(
+            totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile, totalNonDetectedByTypeOnFile = getCorrectsAndIncorrectsByTypeOnFile(
                 detectionsByTypeOnFile, realResultsByTypeOnFile)
             detectionsByTypeOnFileResults.append((constants.SIGNALLIST[signalTypeIndex], totalCorrectByTypeOnFile,
-                                                  totalIncorrectByTypeOnFile, len(realResultsByTypeOnFile)))
+                                                  totalIncorrectByTypeOnFile, totalNonDetectedByTypeOnFile,
+                                                  len(realResultsByTypeOnFile)))
 
             totalCorrectOnFile += totalCorrectByTypeOnFile
             totalIncorrectOnFile += totalIncorrectByTypeOnFile
+            totalNonDetectedOnFile += totalNonDetectedByTypeOnFile
 
         for detectionByTypeOnFileResults in detectionsByTypeOnFileResults:
-            correct, incorrect, expectedCorrect = totalDetectionsByType[detectionByTypeOnFileResults[0]]
+            correct, incorrect, nonDetected, expectedCorrect = totalDetectionsByType[detectionByTypeOnFileResults[0]]
             correct += detectionByTypeOnFileResults[1]
             incorrect += detectionByTypeOnFileResults[2]
-            expectedCorrect += detectionByTypeOnFileResults[3]
-            totalDetectionsByType[detectionByTypeOnFileResults[0]] = (correct, incorrect, expectedCorrect)
+            nonDetected += detectionByTypeOnFileResults[3]
+            expectedCorrect += detectionByTypeOnFileResults[4]
+            totalDetectionsByType[detectionByTypeOnFileResults[0]] = (correct, incorrect, nonDetected, expectedCorrect)
 
         detectionsPerFileByType.append((fileNameAndNumber[0], detectionsByTypeOnFileResults, totalCorrectOnFile,
-                                        totalIncorrectOnFile, expectedTotalCorrectOnFile))
+                                        totalIncorrectOnFile, totalNonDetectedOnFile, expectedTotalCorrectOnFile))
 
     totalDetectionsByType = list(totalDetectionsByType.items())
 
     for totalDetectionByType in totalDetectionsByType:
         totalCorrect += totalDetectionByType[1][0]
         totalIncorrect += totalDetectionByType[1][1]
-        expectedTotalCorrect += totalDetectionByType[1][2]
+        totalNonDetected += totalDetectionByType[1][2]
+        expectedTotalCorrect += totalDetectionByType[1][3]
 
-    return detectionsPerFileByType, totalDetectionsByType, totalCorrect, totalIncorrect, expectedTotalCorrect
+    return detectionsPerFileByType, totalDetectionsByType, totalCorrect, totalIncorrect, totalNonDetected, expectedTotalCorrect
+
+
+def score(truePositives, falsePositives, falseNegatives):
+    if truePositives > 0 or falsePositives > 0 or falseNegatives > 0:
+        return (2 * truePositives) / ((2 * truePositives) + falsePositives + falseNegatives)
+    else:
+        return "NaN"
 
 
 def test(trainPath, testPath, MSERValues):
+    constants.TRAIN_PATH = trainPath
+    constants.TEST_PATH = testPath
+
     print("\nVa a comenzar el test de detección de señales de tráfico...")
-    print("\nGenerando mascaras a partir de imágenes de entrenamiento... \n(" + trainPath + ")")
+    print("\nGenerando mascaras a partir de imágenes de entrenamiento... \n(" + constants.TRAIN_PATH + ")")
 
     try:
         meanMasks = calculateMeanMask()
@@ -566,11 +614,11 @@ def test(trainPath, testPath, MSERValues):
             print("   MAX VARIATION:", maxVariation)
 
             print(
-                "\nVa a comenzar la detección de señales de tráfico en las imágenes de test... \n(" + testPath + ")\n")
+                "\nVa a comenzar la detección de señales de tráfico en las imágenes de test... \n(" + constants.TEST_PATH + ")\n")
             print("Analizando y extrayendo regiones de interés...")
 
             try:
-                detections, numDetections, imagesWithDetections = detectSignsOnDirectory(testPath, mser)
+                detections, numDetections, imagesWithDetections = detectSignsOnDirectory(constants.TEST_PATH, mser)
             except Exception as e:
                 print("Ha ocurrido un error en el proceso de detección de señales :(")
                 print("\n"
@@ -579,7 +627,7 @@ def test(trainPath, testPath, MSERValues):
                       "------------------------------------------------------------\n")
                 print(e)
             else:
-                resultImagesPath = "resultado_imgs"  # _d" + str(delta) + "_mv" + str(maxVar)  # Borrar después de testing
+                resultImagesPath = "resultado_imgs"
 
                 print("\nEl proceso ha concluido con éxito, las imágenes de test con sus respectivas detecciones (con "
                       "eliminación de repeticiones) serán "
@@ -608,7 +656,7 @@ def test(trainPath, testPath, MSERValues):
                         "\nA continuación se listarán las detecciones obtenidas, con eliminación de repeticiones, "
                         "por cada "
                         "archivo en",
-                        testPath + "\n")
+                        constants.TEST_PATH + "\n")
 
                     total = 0
                     for file, number in numDetections:
@@ -616,16 +664,17 @@ def test(trainPath, testPath, MSERValues):
                         total += number
                     print("Total ...........", total, "detecciones")
 
-                    print("\nVa a comenzar el proceso de filtrado por correlación de máscaras almacenadas en el "
-                          "directorio"
-                          , trainPath + "...\n")
+                    print("\nVa a comenzar el proceso de filtrado por correlación de máscaras...\n")
                     print("Realizando el filtrado...")
                     try:
                         # detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
                         detectionResults = []
                         for detectionsPerFile in tqdm(detections):
                             for detection in detectionsPerFile:
-                                detectionResults.append(detectionsMaskCorrelation(detection, meanMasks[0], meanMasks[1]))
+                                detectionMaskCorrelationResult = detectionsMaskCorrelation(detection, meanMasks[0],
+                                                                                           meanMasks[1], 0.55)
+                                if detectionMaskCorrelationResult is not None:
+                                    detectionResults.append(detectionMaskCorrelationResult)
 
                         detections = detectionResults
                     except Exception as e:
@@ -695,31 +744,37 @@ def test(trainPath, testPath, MSERValues):
                             else:
                                 print("\nLas estadísticas de funcionamiento son las siguientes:")
 
-                                detectionsPerFileByType, totalDetectionsByType, totalCorrect, totalIncorrect, expectedTotalCorrect = statisticsResults
+                                detectionsPerFileByType, totalDetectionsByType, totalCorrect, totalIncorrect, totalNonDetected, expectedTotalCorrect = statisticsResults
 
                                 print("\n"
                                       "---------------------------------\n"
                                       "     DETECCIONES POR ARCHIVO     \n"
                                       "---------------------------------\n")
                                 for detectionPerFile in detectionsPerFileByType:
-                                    fileName, detectionsByTypeOnFile, totalCorrectOnFile, totalIncorrectOnFile, expectedTotalCorrectOnFile = detectionPerFile
-                                    print(fileName, "...............................")
-                                    print("                TOTAL CORRECTAS:", totalCorrectOnFile)
-                                    print("              TOTAL INCORRECTAS:", totalIncorrectOnFile)
-                                    print("        VALOR CORRECTO ESPERADO:", expectedTotalCorrectOnFile)
-                                    print("                TASA DE ACIERTO:",
-                                          totalCorrectOnFile / expectedTotalCorrectOnFile if expectedTotalCorrectOnFile != 0 else "NaN")
+                                    fileName, detectionsByTypeOnFile, totalCorrectOnFile, totalIncorrectOnFile, totalNonDetectedOnFile, expectedTotalCorrectOnFile = detectionPerFile
+                                    print(fileName,
+                                          "..................................................................")
+                                    print("                TOTAL DETECTADAS CORRECTAS:", totalCorrectOnFile)
+                                    print("              TOTAL DETECTADAS INCORRECTAS:", totalIncorrectOnFile)
+                                    print("                       TOTAL NO DETECTADAS:", totalNonDetectedOnFile)
+                                    print("      VALOR DETECTADAS CORRECTAS ESPERADAS:", expectedTotalCorrectOnFile)
+                                    print("                           TASA DE ACIERTO:",
+                                          score(totalCorrectOnFile, totalIncorrectOnFile, totalNonDetectedOnFile))
                                     for detectionByTypeOnFile in detectionsByTypeOnFile:
-                                        signType, totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile, expectedTotalCorrectByTypeOnFile = detectionByTypeOnFile
-                                        print("\n            " + signType + ":..................................")
-                                        print("                                  TOTAL CORRECTAS:",
+                                        signType, totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile, totalNonDetectedByTypeOnFile, expectedTotalCorrectByTypeOnFile = detectionByTypeOnFile
+                                        print(
+                                            "\n            " + signType + ":..................................................................")
+                                        print("                                     TOTAL DETECTADAS CORRECTAS:",
                                               totalCorrectByTypeOnFile)
-                                        print("                                TOTAL INCORRECTAS:",
+                                        print("                                   TOTAL DETECTADAS INCORRECTAS:",
                                               totalIncorrectByTypeOnFile)
-                                        print("                          VALOR CORRECTO ESPERADO:",
+                                        print("                                            TOTAL NO DETECTADAS:",
+                                              totalNonDetectedByTypeOnFile)
+                                        print("                           VALOR DETECTADAS CORRECTAS ESPERADAS:",
                                               expectedTotalCorrectByTypeOnFile)
-                                        print("                                  TASA DE ACIERTO:",
-                                              totalCorrectByTypeOnFile / expectedTotalCorrectByTypeOnFile if expectedTotalCorrectByTypeOnFile != 0 else "NaN")
+                                        print("                                                TASA DE ACIERTO:",
+                                              score(totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile,
+                                                    totalNonDetectedByTypeOnFile))
 
                                 print("\n"
                                       "---------------------------------------\n"
@@ -727,50 +782,81 @@ def test(trainPath, testPath, MSERValues):
                                       "---------------------------------------\n")
                                 for detectionByType in totalDetectionsByType:
                                     signType = detectionByType[0]
-                                    totalCorrectByType, totalIncorrectByType, expectedTotalCorrectByType = detectionByType[1]
-                                    print(signType, "...............................")
-                                    print("                TOTAL CORRECTAS:", totalCorrectByType)
-                                    print("              TOTAL INCORRECTAS:", totalIncorrectByType)
-                                    print("        VALOR CORRECTO ESPERADO:", expectedTotalCorrectByType)
-                                    print("                TASA DE ACIERTO:",
-                                          totalCorrectByType / expectedTotalCorrectByType if expectedTotalCorrectByType != 0 else "NaN")
+                                    totalCorrectByType, totalIncorrectByType, totalNonDetectedByType, expectedTotalCorrectByType = \
+                                        detectionByType[1]
+                                    print(signType,
+                                          "..................................................................")
+                                    print("                TOTAL DETECTADAS CORRECTAS:", totalCorrectByType)
+                                    print("              TOTAL DETECTADAS INCORRECTAS:", totalIncorrectByType)
+                                    print("                       TOTAL NO DETECTADAS:", totalNonDetectedByType)
+                                    print("      VALOR DETECTADAS CORRECTAS ESPERADAS:", expectedTotalCorrectByType)
+                                    print("                           TASA DE ACIERTO:",
+                                          score(totalCorrectByType, totalIncorrectByType, totalNonDetectedByType))
 
                                 print("\n"
                                       "-----------------------------\n"
                                       "     DETECCIONES TOTALES     \n"
                                       "-----------------------------\n")
-                                print("TOTAL CORRECTAS:", totalCorrect)
-                                print("TOTAL INCORRECTAS:", totalIncorrect)
-                                print("VALOR CORRECTO ESPERADO:", expectedTotalCorrect)
-                                print("TASA DE ACIERTO:", totalCorrect / expectedTotalCorrect if expectedTotalCorrect != 0 else "NaN")
+                                print("          TOTAL DETECTADAS CORRECTAS:", totalCorrect)
+                                print("        TOTAL DETECTADAS INCORRECTAS:", totalIncorrect)
+                                print("                 TOTAL NO DETECTADAS:", totalNonDetected)
+                                print("VALOR DETECTADAS CORRECTAS ESPERADAS:", expectedTotalCorrect)
+                                print("                     TASA DE ACIERTO:",
+                                      score(totalCorrect, totalIncorrect, totalNonDetected))
 
                                 print("\n"
                                       "------------------------------------------------------------\n"
                                       "                  TEST TERMINADO CON ÉXITO                  \n"
                                       "------------------------------------------------------------\n")
 
-                                return totalCorrect / expectedTotalCorrect if expectedTotalCorrect != 0 else "NaN"   # Borrar después de testing
+                                return score(totalCorrect, totalIncorrect,
+                                             totalNonDetected)  # Borrar después de testing
 
-# if __name__ == "__main__":
-#     parser = argparse.ArgumentParser(
-#         description='Trains and executes a given detector over a set of testing images')
-#     parser.add_argument(
-#         '--detector', type=str, nargs="?", default="", help='Detector string name')
-#     parser.add_argument(
-#         '--train_path', default="", help='Select the training data dir')
-#     parser.add_argument(
-#         '--test_path', default="", help='Select the testing data dir')
-#
-#     args = parser.parse_args()
-#
-#     test()
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        description='Trains and executes a given detector over a set of testing images')
+    parser.add_argument(
+        '--detector', type=str, nargs="?", default="MSER_15_200_2000_0.6",
+        help='Detector string name (default: MSER_15_200_2000_0.6)')
+    parser.add_argument(
+        '--train_path', default="", help='Select the training data dir (default: train_jpg)')
+    parser.add_argument(
+        '--test_path', default="", help='Select the testing data dir (default: test_alumnos_jpg)')
+
+    args = parser.parse_args()
+
+    mserValues = args.detector.split('_')
+
+    if len(mserValues) == 5 and mserValues[0] == 'MSER' and 0 < int(mserValues[1]) <= 40 and 0 < int(
+            mserValues[2]) <= 20000 and 0 < int(mserValues[
+                                                    3]) <= 20000 and int(mserValues[2]) <= \
+            int(mserValues[3]) and 0 < float(mserValues[4]) <= 1:
+        test(args.train_path, args.test_path,
+             (int(mserValues[1]), int(mserValues[2]), int(mserValues[3]), float(mserValues[4])))
+    else:
+        print("\nNo se ha especificado el nombre de un detector existente")
+        print("        Especificaciones sobre\n"
+              "        detectores:.........................................")
+        print(
+            "                          Todos los detectores usan MSER para encontrar las señales de tráfico. Para especificar\n"
+            "                          un detector siga esta nomenclatura:\n"
+            "                                 NOMBRE -> 'MSER'\n"
+            "                                  DELTA -> Numero entero entre 1 y 40\n"
+            "                               MIN AREA -> Numero entero entre 1 y 20000\n"
+            "                               MAX AREA -> Numero entero entre 1 y 20000\n"
+            "                          MAX VARIATION -> Numero decimal mayor que 0 entre 0 y 1\n"
+            "                          (Cada uno de los parámetros irá separado por '_')\n"
+            "                          (Tenga en cuenta que MIN AREA >= MAX AREA)\n\n"
+            "         Ejemplo de uso: MSER_5_200_3000_0.45")
+
 
 def getTotal(e):
     return e[2]
 
 
 def multiTest():
-    delta = np.arange(7, 19, 1)
+    delta = np.arange(1, 21, 1)
     variation = np.arange(0.05, 1.05, 0.05)
 
     totals = []
@@ -785,7 +871,6 @@ def multiTest():
 
     print("\n\n\nVALOR ÓPTIMO!!!!!:", totals[0])
 
-
-test("train_jpg", "test_alumnos_jpg", (25, 200, 2000, 1))
+# test("train_jpg", "test_alumnos_jpg", (8, 200, 2000, 0.7))
 
 # multiTest()
