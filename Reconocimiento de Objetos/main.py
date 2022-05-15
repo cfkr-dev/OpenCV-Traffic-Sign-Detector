@@ -1,125 +1,105 @@
+# -------------------------------------------------------------------------------------------------
+#   Universidad Rey Juan Carlos - Grado en Ingeniería Informática - Visión Artificial
+#
+#       Práctica 2 - Reconocimiento de Objetos
+#
+#       Desarrollado por:
+#             - Alberto Pérez Pérez (GII + GIS)
+#             - Daniel Tolosa Oropesa (GII)
+# -------------------------------------------------------------------------------------------------
+
+
+# -------------------------------------
+#                IMPORTS
+# -------------------------------------
+import constants
 import argparse
 import math
 import os
 import shutil
-from time import sleep
-
 import cv2
 import numpy as np
-# Loop progress bar || Resource from: https://github.com/tqdm/tqdm
-from tqdm import tqdm
-
-import constants
+from time import sleep
+from tqdm import tqdm  # Loop progress bar || Resource from: https://github.com/tqdm/tqdm
 
 
-def makeWindowBiggerOrDiscardFakeDetections(window, percentage):
-    x1, y1, w, h = window
-
-    x2 = x1 + w
-    y2 = y1 + h
-
-    middleDeltaW = w * (percentage - 1) * 0.5
-    middleDeltaH = h * (percentage - 1) * 0.5
-
-    squareGoodAspectRatio = True if (0.8 < w / h < 1.20) else False
-    if squareGoodAspectRatio:
-
-        x1 = x1 - middleDeltaW if x1 - middleDeltaW > 0 else 0
-        y1 = y1 - middleDeltaH if y1 - middleDeltaH > 0 else 0
-        x2 = x2 + middleDeltaW if x2 + middleDeltaW > 0 else 0
-        y2 = y2 + middleDeltaH if y2 + middleDeltaH > 0 else 0
-
-        return int(x1), int(y1), int(x2), int(y2)
-    else:
-        return None
+# -----------------------------------
+#              FUNCTIONS
+# -----------------------------------
 
 
-def cropImageByCoords(coords, image):
-    x1, y1, x2, y2 = coords
-    return image[y1:y2, x1:x2]
+# ----------------------- MAKS FUNCTIONS -----------------------
 
 
-def calculateHistAndNormalize(image):
-    imageHSV = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+def calculateMeanMasks():
+    signalsMasksRed = []
+    signalsMasksBlue = []
 
-    histSize = [50, 60]
-    HueRanges = [0, 180]
-    SaturationRanges = [0, 256]
-    ranges = HueRanges + SaturationRanges
-    channels = [0, 1]
+    prohibicion = constants.PROHIBICION
+    peligro = constants.PELIGRO
+    stop = constants.STOP
+    direccionProhibida = constants.DIRECCIONPROHIBIDA
+    cedaPaso = constants.CEDAPASO
+    direccionObligatoria = constants.DIRECCIONOBLIGATORIA
 
-    imageHist = cv2.calcHist([imageHSV], channels, None, histSize, ranges, accumulate=False)
+    signs = [prohibicion, peligro, stop, direccionProhibida, cedaPaso, direccionObligatoria]
 
-    return cv2.normalize(imageHist, imageHist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+    namesListPosition = -1
 
+    for signType in tqdm(signs):
+        namesListPosition += 1
+        mask = np.zeros((25, 25, 3), np.uint8)
+        first = True
+        for singDir in signType:
+            signs = os.listdir(constants.TRAIN_PATH + '/' + singDir)
+            for file in signs:
+                currentResizedImage = cv2.resize(cv2.imread(constants.TRAIN_PATH + '/' + singDir + '/' + file),
+                                                 (25, 25))
+                if first:
+                    mask = cv2.addWeighted(currentResizedImage, 1, mask, 0, 0.0)
+                    first = False
+                else:
+                    mask = cv2.addWeighted(currentResizedImage, 0.5, mask, 0.5, 0.0)
 
-def meanCoods(coordsA, coordsB):
-    x1A, y1A, x2A, y2A = coordsA
-    x1B, y1B, x2B, y2B = coordsB
-    return (x1A + x1B) // 2, (y1A + y1B) // 2, (x2A + x2B) // 2, (y2A + y2B) // 2
+        signalsMasksBlue.append((getColorMaskRedOrBlue(mask, 'b'), constants.SIGNALLIST[namesListPosition]))
+        signalsMasksRed.append((getColorMaskRedOrBlue(mask, 'r'), constants.SIGNALLIST[namesListPosition]))
 
+        sleep(0.01)
 
-def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance, isSimilarityByEuclideanDistanceON):
-    deletions = []
-    if detections:
-        for detection in detections:
-            if not isSimilarityByEuclideanDistanceON:
-                # Use histogram comparison between two images || resource from:
-                # https://docs.opencv.org/3.4/d8/dc8/tutorial_histogram_comparison.html
-                similarity = cv2.compareHist(calculateHistAndNormalize(image[0]),
-                                             calculateHistAndNormalize(detection[0]),
-                                             cv2.HISTCMP_CORREL)
-            else:
-                imageCoords = image[1]
-                detectionCoords = detection[1]
-
-                similarity = np.sqrt(
-                    EuclDSimilarity(imageCoords[0], imageCoords[1], detectionCoords[0],
-                                    detectionCoords[1]) * EuclDSimilarity(imageCoords[2], imageCoords[3],
-                                                                          detectionCoords[2],
-                                                                          detectionCoords[3]))
-
-            if similarity > tolerance:
-                deletions.append(detection)
-            elif tolerance * 0.8823 <= similarity <= tolerance:
-                image = (
-                    cv2.addWeighted(image[0], 0.5, detection[0], 0.5, 0.0), meanCoods(image[1], detection[1]),
-                    detection[2])
-                deletions.append(detection)
-
-    return image, deletions
+    return signalsMasksRed, signalsMasksBlue
 
 
-def getElementIndexFromList(l, element):
-    # Consider "l" contains "element"
-    index = 0
-    for x in l:
-        if np.array_equal(x[0], element):
-            return index
-        index += 1
+# Color filtering using HSV || Resource from: https://www.geeksforgeeks.org/filter-color-with-opencv/
+def getColorMaskRedOrBlue(image, color):
+    imageResize = cv2.resize(image, (25, 25))
+    imageHSV = cv2.cvtColor(imageResize, cv2.COLOR_BGR2HSV)
+
+    # Red color
+    if color == 'r':
+        # Lower red mask
+        lowerRed = np.array([0, 50, 10])
+        upperRed = np.array([10, 255, 255])
+        maskLower = cv2.inRange(imageHSV, lowerRed, upperRed)
+
+        # Upper red mask
+        lowerRed = np.array([160, 50, 10])
+        upperRed = np.array([179, 255, 255])
+        maskUpper = cv2.inRange(imageHSV, lowerRed, upperRed)
+
+        maskRed = cv2.add(maskLower, maskUpper)
+
+        return maskRed
+
+    # Blue color
+    elif color == 'b':
+        lowerBlue = np.array([90, 70, 10], np.uint8)
+        upperBlue = np.array([128, 255, 255], np.uint8)
+        maskBlue = cv2.inRange(imageHSV, lowerBlue, upperBlue)
+
+        return maskBlue
 
 
-def cleanDuplicatedDetections(imageDetections, isSimilarityByEuclideanDistanceON, tolerance):
-    cleanDetections = []
-
-    for image in imageDetections:
-        image, deletions = checkIfImageIsDuplicatedOrMergeSimilarOnes(image, cleanDetections, tolerance,
-                                                                      isSimilarityByEuclideanDistanceON)
-        if deletions:
-            for deletedImage in deletions:
-                cleanDetections.pop(getElementIndexFromList(cleanDetections, deletedImage[0]))
-
-        cleanDetections.append(image)
-
-    return cleanDetections
-
-
-def createImageWithWindows(image, windowsBorders):
-    for detectedImage in windowsBorders:
-        x1, y1, x2, y2 = detectedImage[1]
-        image = cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 1)
-
-    return image
+# ----------------------- MSER FUNCTIONS -----------------------
 
 
 def detectSignsOnDirectory(path, mser):
@@ -161,24 +141,20 @@ def MSERTrafficSignDetector(image, mser, file):
     return croppedImageDetections
 
 
-# Gamma correction for enhance exposure || Resource from:
-# https://lindevs.com/apply-gamma-correction-to-an-image-using-opencv/
-def gammaCorrection(src, gamma):
-    invGamma = 1 / gamma
-
-    table = [((i / 255) ** invGamma) * 255 for i in range(256)]
-    table = np.array(table, np.uint8)
-
-    return cv2.LUT(src, table)
-
-
+# Different methods combined enhances the image contrast
 def grayAndEnhanceContrast(image):
     # Img turn gray
-
     grayImage = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Use CLAHE (Contrast Limited Adaptive Histogram Equalization) for fine histogram equalization || Resource from:
+    # https://docs.opencv.org/4.x/d5/daf/tutorial_py_histogram_equalization.html
     clahe = cv2.createCLAHE(clipLimit=2)
     claheImage = clahe.apply(grayImage)
+
+    # Blur image for correct noise
     blurImage = cv2.GaussianBlur(claheImage, (3, 3), 0)
+
+    # Enhance exposure
     imageGammaCorrection = gammaCorrection(blurImage, 2)
 
     result = imageGammaCorrection
@@ -186,88 +162,78 @@ def grayAndEnhanceContrast(image):
     return result
 
 
-# Color filtering using HSV || Resource from: https://www.geeksforgeeks.org/filter-color-with-opencv/
-def getColorMaskRedOrBlue(image, color):
-    imageResize = cv2.resize(image, (25, 25))
-    imageHSV = cv2.cvtColor(imageResize, cv2.COLOR_BGR2HSV)
+def makeWindowBiggerOrDiscardFakeDetections(window, percentage):
+    x1, y1, w, h = window
 
-    # Red color
-    if color == 'r':
-        # Lower red mask
-        lowerRed = np.array([0, 50, 10])
-        upperRed = np.array([10, 255, 255])
-        maskLower = cv2.inRange(imageHSV, lowerRed, upperRed)
+    x2 = x1 + w
+    y2 = y1 + h
 
-        # Upper red mask
-        lowerRed = np.array([160, 50, 10])
-        upperRed = np.array([179, 255, 255])
-        maskUpper = cv2.inRange(imageHSV, lowerRed, upperRed)
+    middleDeltaW = w * (percentage - 1) * 0.5
+    middleDeltaH = h * (percentage - 1) * 0.5
 
-        maskRed = cv2.add(maskLower, maskUpper)
+    squareGoodAspectRatio = True if (0.8 < w / h < 1.20) else False
+    if squareGoodAspectRatio:
 
-        return maskRed
+        x1 = x1 - middleDeltaW if x1 - middleDeltaW > 0 else 0
+        y1 = y1 - middleDeltaH if y1 - middleDeltaH > 0 else 0
+        x2 = x2 + middleDeltaW if x2 + middleDeltaW > 0 else 0
+        y2 = y2 + middleDeltaH if y2 + middleDeltaH > 0 else 0
 
-    # Blue color
-    elif color == 'b':
-        lowerBlue = np.array([90, 70, 10], np.uint8)
-        upperBlue = np.array([128, 255, 255], np.uint8)
-        maskBlue = cv2.inRange(imageHSV, lowerBlue, upperBlue)
-
-        return maskBlue
+        return int(x1), int(y1), int(x2), int(y2)
+    else:
+        return None
 
 
-def calculateMeanMask():
-    signalsMasksRed = []
-    signalsMasksBlue = []
+def cleanDuplicatedDetections(imageDetections, isSimilarityByEuclideanDistanceON, tolerance):
+    cleanDetections = []
 
-    prohibicion = constants.PROHIBICION
-    peligro = constants.PELIGRO
-    stop = constants.STOP
-    direccionProhibida = constants.DIRECCIONPROHIBIDA
-    cedaPaso = constants.CEDAPASO
-    direccionObligatoria = constants.DIRECCIONOBLIGATORIA
+    for image in imageDetections:
+        image, deletions = checkIfImageIsDuplicatedOrMergeSimilarOnes(image, cleanDetections, tolerance,
+                                                                      isSimilarityByEuclideanDistanceON)
+        if deletions:
+            for deletedImage in deletions:
+                cleanDetections.pop(getElementIndexFromList(cleanDetections, deletedImage[0]))
 
-    signs = [prohibicion, peligro, stop, direccionProhibida, cedaPaso, direccionObligatoria]
+        cleanDetections.append(image)
 
-    namesListPosition = -1
-
-    for signType in tqdm(signs):
-        namesListPosition += 1
-        mask = np.zeros((25, 25, 3), np.uint8)
-        first = True
-        for singDir in signType:
-            signs = os.listdir(constants.TRAIN_PATH + '/' + singDir)
-            for file in signs:
-                currentResizedImage = cv2.resize(cv2.imread(constants.TRAIN_PATH + '/' + singDir + '/' + file),
-                                                 (25, 25))
-                if first:
-                    mask = cv2.addWeighted(currentResizedImage, 1, mask, 0, 0.0)
-                    first = False
-                else:
-                    mask = cv2.addWeighted(currentResizedImage, 0.5, mask, 0.5, 0.0)
-
-        signalsMasksBlue.append((getColorMaskRedOrBlue(mask, 'b'), constants.SIGNALLIST[namesListPosition]))
-        signalsMasksRed.append((getColorMaskRedOrBlue(mask, 'r'), constants.SIGNALLIST[namesListPosition]))
-
-        sleep(0.01)
-
-    return signalsMasksRed, signalsMasksBlue
+    return cleanDetections
 
 
-def getSimilarSignalType(imageMask, signalsMasks):
-    finalScore = -math.inf
-    signalName = ''
+def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance, isSimilarityByEuclideanDistanceON):
+    deletions = []
+    if detections:
+        for detection in detections:
+            if not isSimilarityByEuclideanDistanceON:
 
-    for signalMask in signalsMasks:
-        signalMaskImage, signalMaskName = signalMask
-        imageMaskANDSignalMask = imageMask * signalMaskImage
-        score = calculateScoreBetweenMatrixs(imageMaskANDSignalMask, signalMaskImage)
+                # Use histogram comparison between two images || resource from:
+                # https://docs.opencv.org/3.4/d8/dc8/tutorial_histogram_comparison.html
+                similarity = cv2.compareHist(calculateHistAndNormalize(image[0]),
+                                             calculateHistAndNormalize(detection[0]),
+                                             cv2.HISTCMP_CORREL)
+            else:
 
-        if score > finalScore:
-            signalName = constants.SIGNALLIST.index(signalMaskName) + 1
-            finalScore = score
+                # Use euclidean distance for comparison between two images using the coordinates
+                imageCoords = image[1]
+                detectionCoords = detection[1]
 
-    return finalScore, signalName
+                similarity = np.sqrt(
+                    EuclDSimilarity(imageCoords[0], imageCoords[1], detectionCoords[0],
+                                    detectionCoords[1]) * EuclDSimilarity(imageCoords[2], imageCoords[3],
+                                                                          detectionCoords[2],
+                                                                          detectionCoords[3]))
+
+            if similarity > tolerance:
+                deletions.append(detection)
+            elif tolerance * 0.8823 <= similarity <= tolerance:
+                image = (
+                    cv2.addWeighted(image[0], 0.5, detection[0], 0.5, 0.0), meanCoords(image[1], detection[1]),
+                    detection[2])
+                deletions.append(detection)
+
+    return image, deletions
+
+
+# ----------------------- IMAGE RECOGNITION FUNCTIONS -----------------------
 
 
 def detectionsMaskCorrelation(detection, signalsMasksRed, signalsMasksBlue, tolerance):
@@ -289,197 +255,23 @@ def detectionsMaskCorrelation(detection, signalsMasksRed, signalsMasksBlue, tole
             return None
 
 
-# based on recall and precision calculus || Resource from:
-# https://en.wikipedia.org/wiki/Precision_and_recall#Definition_(classification_context)
-def calculateScoreBetweenMatrixs(matrix1, matrix2):
-    truePositives = 0
-    falsePositives = 0
-    falseNegatives = 0
-    trueNegatives = 0
+def getSimilarSignalType(imageMask, signalsMasks):
+    finalScore = -math.inf
+    signalName = ''
 
-    if matrix1.shape == matrix2.shape:
-        matrix2 = matrix2 // 255
-        for rowMatrix1, rowMatrix2 in zip(matrix1, matrix2):
-            for elementMatrix1, elementMatrix2 in zip(rowMatrix1, rowMatrix2):
-                if elementMatrix1 == 1 and elementMatrix2 == 1:
-                    truePositives += 1
-                elif elementMatrix1 == 1 and elementMatrix2 == 0:
-                    falsePositives += 1
-                elif elementMatrix1 == 0 and elementMatrix2 == 1:
-                    falseNegatives += 1
-                else:
-                    trueNegatives += 1
-        matrixShape = matrix1.shape[0] * matrix1.shape[1]
-        if matrixShape + matrixShape * 0.01 >= trueNegatives >= matrixShape - matrixShape * 0.01:
-            return 0
-        else:
-            return round((2 * truePositives) / ((2 * truePositives) + falsePositives + falseNegatives), 2)
+    for signalMask in signalsMasks:
+        signalMaskImage, signalMaskName = signalMask
+        imageMaskANDSignalMask = imageMask * signalMaskImage
+        score = calculateScoreBetweenMatrixs(imageMaskANDSignalMask, signalMaskImage)
+
+        if score > finalScore:
+            signalName = constants.SIGNALLIST.index(signalMaskName) + 1
+            finalScore = score
+
+    return finalScore, signalName
 
 
-def createDetectionsStrings(detections):
-    detectionsStrings = []
-    for detection in detections:
-        filename, x1, y1, x2, y2, signType, score = detection
-        detectionsStrings.append(
-            filename + ";" + str(x1) + ";" + str(y1) + ";" + str(x2) + ";" + str(y2) + ";" + str(signType) + ";" + str(
-                score))
-    return detectionsStrings
-
-
-def calculateSignType(signType):
-    prohibicion = constants.PROHIBICION
-    peligro = constants.PELIGRO
-    stop = constants.STOP
-    direccionProhibida = constants.DIRECCIONPROHIBIDA
-    cedaPaso = constants.CEDAPASO
-    direccionObligatoria = constants.DIRECCIONOBLIGATORIA
-
-    if int(signType) < 10:
-        signType = '0' + signType
-
-    if signType in prohibicion:
-        return 1
-    elif signType in peligro:
-        return 2
-    elif signType in stop:
-        return 3
-    elif signType in direccionProhibida:
-        return 4
-    elif signType in cedaPaso:
-        return 5
-    elif signType in direccionObligatoria:
-        return 6
-
-
-def getResultsOnFile(fileName, detections, realResults):
-    detectionsOnFile = []
-    realResultsOnFile = []
-
-    for detection in detections:
-        if detection[0].split(".", 1)[0] == fileName.split(".", 1)[0]:
-            detectionsOnFile.append(detection)
-
-    for realResult in realResults:
-        if realResult[0].split(".", 1)[0] == fileName.split(".", 1)[0]:
-            realResultsOnFile.append(realResult)
-
-    return detectionsOnFile, realResultsOnFile
-
-
-def appendResultsByTypeOnFile(resultsOnFile, resultsProhibicionOnFile, resultsPeligroOnFile, resultsStopOnFile,
-                              resultsDirProhOnFile, resultsCedaPasoOnFile, resultsDirObligOnFile):
-    for resultOnFile in resultsOnFile:
-        if resultOnFile[5] == 1:
-            resultsProhibicionOnFile.append(resultOnFile)
-        elif resultOnFile[5] == 2:
-            resultsPeligroOnFile.append(resultOnFile)
-        elif resultOnFile[5] == 3:
-            resultsStopOnFile.append(resultOnFile)
-        elif resultOnFile[5] == 4:
-            resultsDirProhOnFile.append(resultOnFile)
-        elif resultOnFile[5] == 5:
-            resultsCedaPasoOnFile.append(resultOnFile)
-        else:
-            resultsDirObligOnFile.append(resultOnFile)
-
-    return [resultsProhibicionOnFile, resultsPeligroOnFile, resultsStopOnFile,
-            resultsDirProhOnFile, resultsCedaPasoOnFile, resultsDirObligOnFile]
-
-
-def getResultsByTypeOnFile(detectionsOnFile, realResultsOnFile):
-    detectionsProhibicionOnFile = []
-    detectionsPeligroOnFile = []
-    detectionsStopOnFile = []
-    detectionsDirProhOnFile = []
-    detectionsCedaPasoOnFile = []
-    detectionsDirObligOnFile = []
-
-    realResultsProhibicionOnFile = []
-    realResultsPeligroOnFile = []
-    realResultsStopOnFile = []
-    realResultsDirProhOnFile = []
-    realResultsCedaPasoOnFile = []
-    realResultsDirObligOnFile = []
-
-    detectionsByTypeOnFile = appendResultsByTypeOnFile(detectionsOnFile, detectionsProhibicionOnFile,
-                                                       detectionsPeligroOnFile,
-                                                       detectionsStopOnFile,
-                                                       detectionsDirProhOnFile,
-                                                       detectionsCedaPasoOnFile,
-                                                       detectionsDirObligOnFile)
-
-    realResultsByTypeOnFile = appendResultsByTypeOnFile(realResultsOnFile, realResultsProhibicionOnFile,
-                                                        realResultsPeligroOnFile,
-                                                        realResultsStopOnFile,
-                                                        realResultsDirProhOnFile,
-                                                        realResultsCedaPasoOnFile,
-                                                        realResultsDirObligOnFile)
-
-    return detectionsByTypeOnFile, realResultsByTypeOnFile
-
-
-def EuclDSimilarity(xA, yA, xB, yB):
-    euclDist = np.linalg.norm(np.array((xA, yA)) - np.array((xB, yB)))
-    return 1 / (1 + np.power(np.e,
-                             (((0.154 * np.power(euclDist, 1.2)) - 31.8) / (0.2 * euclDist)))) if euclDist > 0 else 1
-
-
-def checkIfDetectionByTypeOnFileIsCorrectIncorrectDuplicated(detectionByTypeOnFile, realResultsByTypeOnFile,
-                                                             checkedRealResults):
-    finalEuclideanDistancesGeometricMean = -math.inf
-    realResultSimilar = None
-    for realResultByTypeOnFile in realResultsByTypeOnFile:
-        EuclideanDistancesGeometricMean = np.sqrt(
-            EuclDSimilarity(detectionByTypeOnFile[1], detectionByTypeOnFile[2], realResultByTypeOnFile[1],
-                            realResultByTypeOnFile[2]) * EuclDSimilarity(detectionByTypeOnFile[3],
-                                                                         detectionByTypeOnFile[4],
-                                                                         realResultByTypeOnFile[3],
-                                                                         realResultByTypeOnFile[4]))
-        if EuclideanDistancesGeometricMean > finalEuclideanDistancesGeometricMean:
-            finalEuclideanDistancesGeometricMean = EuclideanDistancesGeometricMean
-            realResultSimilar = realResultByTypeOnFile
-
-    if finalEuclideanDistancesGeometricMean > 0.85:
-        checkedRealResults.add(realResultSimilar)
-        return "correct", checkedRealResults
-    elif finalEuclideanDistancesGeometricMean > 0.85 and realResultSimilar in checkedRealResults:
-        return "duplicated", checkedRealResults
-    else:
-        return "incorrect", checkedRealResults
-
-
-def getCorrectsAndIncorrectsByTypeOnFile(detectionsByTypeOnFile, realResultsByTypeOnFile):
-    checkedRealResults = set()
-
-    correctDetections = 0
-    incorrectDetections = 0
-    nonDetected = 0
-    duplicatedDetections = 0
-
-    if detectionsByTypeOnFile and realResultsByTypeOnFile:
-        for detectionByTypeOnFile in detectionsByTypeOnFile:
-            checkResult, checkedRealResults = checkIfDetectionByTypeOnFileIsCorrectIncorrectDuplicated(
-                detectionByTypeOnFile, realResultsByTypeOnFile, checkedRealResults)
-            if checkResult == "correct":
-                correctDetections += 1
-            elif checkResult == "duplicated":
-                duplicatedDetections += 1
-            else:
-                incorrectDetections += 1
-        nonDetected += len(realResultsByTypeOnFile) - len(checkedRealResults)
-    elif realResultsByTypeOnFile:
-        nonDetected = len(realResultsByTypeOnFile)
-    elif detectionsByTypeOnFile:
-        incorrectDetections = len(detectionsByTypeOnFile)
-
-    return correctDetections, incorrectDetections, nonDetected
-
-
-def totalLen(l):
-    total = 0
-    for x in l:
-        total += len(x)
-    return total
+# ----------------------- STATISTICS FUNCTIONS -----------------------
 
 
 def generateStatistics(detections, realResultsFilePath, numberDetections):
@@ -518,7 +310,7 @@ def generateStatistics(detections, realResultsFilePath, numberDetections):
         for detectionsByTypeOnFile, realResultsByTypeOnFile in zip(detectionsPerTypeOnFile, realResultsPerTypeOnFile):
             signalTypeIndex += 1
 
-            totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile, totalNonDetectedByTypeOnFile = getCorrectsAndIncorrectsByTypeOnFile(
+            totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile, totalNonDetectedByTypeOnFile = getCorrectsAndWrongByTypeOnFile(
                 detectionsByTypeOnFile, realResultsByTypeOnFile)
             detectionsByTypeOnFileResults.append((constants.SIGNALLIST[signalTypeIndex], totalCorrectByTypeOnFile,
                                                   totalIncorrectByTypeOnFile, totalNonDetectedByTypeOnFile,
@@ -550,11 +342,266 @@ def generateStatistics(detections, realResultsFilePath, numberDetections):
     return detectionsPerFileByType, totalDetectionsByType, totalCorrect, totalIncorrect, totalNonDetected, expectedTotalCorrect
 
 
+def getResultsOnFile(fileName, detections, realResults):
+    detectionsOnFile = []
+    realResultsOnFile = []
+
+    for detection in detections:
+        if detection[0].split(".", 1)[0] == fileName.split(".", 1)[0]:
+            detectionsOnFile.append(detection)
+
+    for realResult in realResults:
+        if realResult[0].split(".", 1)[0] == fileName.split(".", 1)[0]:
+            realResultsOnFile.append(realResult)
+
+    return detectionsOnFile, realResultsOnFile
+
+
+def getResultsByTypeOnFile(detectionsOnFile, realResultsOnFile):
+    detectionsProhibicionOnFile = []
+    detectionsPeligroOnFile = []
+    detectionsStopOnFile = []
+    detectionsDirProhOnFile = []
+    detectionsCedaPasoOnFile = []
+    detectionsDirObligOnFile = []
+
+    realResultsProhibicionOnFile = []
+    realResultsPeligroOnFile = []
+    realResultsStopOnFile = []
+    realResultsDirProhOnFile = []
+    realResultsCedaPasoOnFile = []
+    realResultsDirObligOnFile = []
+
+    detectionsByTypeOnFile = appendResultsByTypeOnFile(detectionsOnFile, detectionsProhibicionOnFile,
+                                                       detectionsPeligroOnFile,
+                                                       detectionsStopOnFile,
+                                                       detectionsDirProhOnFile,
+                                                       detectionsCedaPasoOnFile,
+                                                       detectionsDirObligOnFile)
+
+    realResultsByTypeOnFile = appendResultsByTypeOnFile(realResultsOnFile, realResultsProhibicionOnFile,
+                                                        realResultsPeligroOnFile,
+                                                        realResultsStopOnFile,
+                                                        realResultsDirProhOnFile,
+                                                        realResultsCedaPasoOnFile,
+                                                        realResultsDirObligOnFile)
+
+    return detectionsByTypeOnFile, realResultsByTypeOnFile
+
+
+def appendResultsByTypeOnFile(resultsOnFile, resultsProhibicionOnFile, resultsPeligroOnFile, resultsStopOnFile,
+                              resultsDirProhOnFile, resultsCedaPasoOnFile, resultsDirObligOnFile):
+    for resultOnFile in resultsOnFile:
+        if resultOnFile[5] == 1:
+            resultsProhibicionOnFile.append(resultOnFile)
+        elif resultOnFile[5] == 2:
+            resultsPeligroOnFile.append(resultOnFile)
+        elif resultOnFile[5] == 3:
+            resultsStopOnFile.append(resultOnFile)
+        elif resultOnFile[5] == 4:
+            resultsDirProhOnFile.append(resultOnFile)
+        elif resultOnFile[5] == 5:
+            resultsCedaPasoOnFile.append(resultOnFile)
+        else:
+            resultsDirObligOnFile.append(resultOnFile)
+
+    return [resultsProhibicionOnFile, resultsPeligroOnFile, resultsStopOnFile,
+            resultsDirProhOnFile, resultsCedaPasoOnFile, resultsDirObligOnFile]
+
+
+def getCorrectsAndWrongByTypeOnFile(detectionsByTypeOnFile, realResultsByTypeOnFile):
+    checkedRealResults = set()
+
+    correctDetections = 0
+    incorrectDetections = 0
+    nonDetected = 0
+    duplicatedDetections = 0
+
+    if detectionsByTypeOnFile and realResultsByTypeOnFile:
+        for detectionByTypeOnFile in detectionsByTypeOnFile:
+            checkResult, checkedRealResults = checkIfDetectionByTypeOnFileIsCorrectIncorrectDuplicated(
+                detectionByTypeOnFile, realResultsByTypeOnFile, checkedRealResults)
+            if checkResult == "correct":
+                correctDetections += 1
+            elif checkResult == "duplicated":
+                duplicatedDetections += 1
+            else:
+                incorrectDetections += 1
+        nonDetected += len(realResultsByTypeOnFile) - len(checkedRealResults)
+    elif realResultsByTypeOnFile:
+        nonDetected = len(realResultsByTypeOnFile)
+    elif detectionsByTypeOnFile:
+        incorrectDetections = len(detectionsByTypeOnFile)
+
+    return correctDetections, incorrectDetections, nonDetected
+
+
+def checkIfDetectionByTypeOnFileIsCorrectIncorrectDuplicated(detectionByTypeOnFile, realResultsByTypeOnFile,
+                                                             checkedRealResults):
+    finalEuclideanDistancesGeometricMean = -math.inf
+    realResultSimilar = None
+    for realResultByTypeOnFile in realResultsByTypeOnFile:
+        EuclideanDistancesGeometricMean = np.sqrt(
+            EuclDSimilarity(detectionByTypeOnFile[1], detectionByTypeOnFile[2], realResultByTypeOnFile[1],
+                            realResultByTypeOnFile[2]) * EuclDSimilarity(detectionByTypeOnFile[3],
+                                                                         detectionByTypeOnFile[4],
+                                                                         realResultByTypeOnFile[3],
+                                                                         realResultByTypeOnFile[4]))
+        if EuclideanDistancesGeometricMean > finalEuclideanDistancesGeometricMean:
+            finalEuclideanDistancesGeometricMean = EuclideanDistancesGeometricMean
+            realResultSimilar = realResultByTypeOnFile
+
+    if finalEuclideanDistancesGeometricMean > 0.85:
+        checkedRealResults.add(realResultSimilar)
+        return "correct", checkedRealResults
+    elif finalEuclideanDistancesGeometricMean > 0.85 and realResultSimilar in checkedRealResults:
+        return "duplicated", checkedRealResults
+    else:
+        return "incorrect", checkedRealResults
+
+
+# ----------------------- UTILS FUNCTIONS -----------------------
+
+
+# Percentual function (based on sigmoid function) uses euclidean distance between 2 points (The closer values are,
+# this returns values close to 1. At determined distance called "closeness limit", points are considered far,
+# so the function returns values close to 0)... Many hours trying values on Geogebra
+def EuclDSimilarity(xA, yA, xB, yB):
+    euclDist = np.linalg.norm(np.array((xA, yA)) - np.array((xB, yB)))
+    return 1 / (1 + np.power(np.e,
+                             (((0.154 * np.power(euclDist, 1.2)) - 31.8) / (0.2 * euclDist)))) if euclDist > 0 else 1
+
+
+def meanCoords(coordsA, coordsB):
+    x1A, y1A, x2A, y2A = coordsA
+    x1B, y1B, x2B, y2B = coordsB
+    return (x1A + x1B) // 2, (y1A + y1B) // 2, (x2A + x2B) // 2, (y2A + y2B) // 2
+
+
+def getElementIndexFromList(l, element):
+    # Consider "l" contains "element"
+    index = 0
+    for x in l:
+        if np.array_equal(x[0], element):
+            return index
+        index += 1
+
+
 def score(truePositives, falsePositives, falseNegatives):
     if truePositives > 0 or falsePositives > 0 or falseNegatives > 0:
         return (2 * truePositives) / ((2 * truePositives) + falsePositives + falseNegatives)
     else:
         return "NaN"
+
+
+def createDetectionsStrings(detections):
+    detectionsStrings = []
+    for detection in detections:
+        filename, x1, y1, x2, y2, signType, score = detection
+        detectionsStrings.append(
+            filename + ";" + str(x1) + ";" + str(y1) + ";" + str(x2) + ";" + str(y2) + ";" + str(signType) + ";" + str(
+                score))
+    return detectionsStrings
+
+
+def totalLen(l):
+    total = 0
+    for x in l:
+        total += len(x)
+    return total
+
+
+def calculateSignType(signType):
+    prohibicion = constants.PROHIBICION
+    peligro = constants.PELIGRO
+    stop = constants.STOP
+    direccionProhibida = constants.DIRECCIONPROHIBIDA
+    cedaPaso = constants.CEDAPASO
+    direccionObligatoria = constants.DIRECCIONOBLIGATORIA
+
+    if int(signType) < 10:
+        signType = '0' + signType
+
+    if signType in prohibicion:
+        return 1
+    elif signType in peligro:
+        return 2
+    elif signType in stop:
+        return 3
+    elif signType in direccionProhibida:
+        return 4
+    elif signType in cedaPaso:
+        return 5
+    elif signType in direccionObligatoria:
+        return 6
+
+
+# based on recall and precision calculus || Resource from:
+# https://en.wikipedia.org/wiki/Precision_and_recall#Definition_(classification_context)
+def calculateScoreBetweenMatrixs(matrix1, matrix2):
+    truePositives = 0
+    falsePositives = 0
+    falseNegatives = 0
+    trueNegatives = 0
+
+    if matrix1.shape == matrix2.shape:
+        matrix2 = matrix2 // 255
+        for rowMatrix1, rowMatrix2 in zip(matrix1, matrix2):
+            for elementMatrix1, elementMatrix2 in zip(rowMatrix1, rowMatrix2):
+                if elementMatrix1 == 1 and elementMatrix2 == 1:
+                    truePositives += 1
+                elif elementMatrix1 == 1 and elementMatrix2 == 0:
+                    falsePositives += 1
+                elif elementMatrix1 == 0 and elementMatrix2 == 1:
+                    falseNegatives += 1
+                else:
+                    trueNegatives += 1
+        matrixShape = matrix1.shape[0] * matrix1.shape[1]
+        if matrixShape + matrixShape * 0.01 >= trueNegatives >= matrixShape - matrixShape * 0.01:
+            return 0
+        else:
+            return round((2 * truePositives) / ((2 * truePositives) + falsePositives + falseNegatives), 2)
+
+
+def cropImageByCoords(coords, image):
+    x1, y1, x2, y2 = coords
+    return image[y1:y2, x1:x2]
+
+
+def calculateHistAndNormalize(image):
+    imageHSV = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+
+    histSize = [50, 60]
+    HueRanges = [0, 180]
+    SaturationRanges = [0, 256]
+    ranges = HueRanges + SaturationRanges
+    channels = [0, 1]
+
+    imageHist = cv2.calcHist([imageHSV], channels, None, histSize, ranges, accumulate=False)
+
+    return cv2.normalize(imageHist, imageHist, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX)
+
+
+def createImageWithWindows(image, windowsBorders):
+    for detectedImage in windowsBorders:
+        x1, y1, x2, y2 = detectedImage[1]
+        image = cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 255), 1)
+
+    return image
+
+
+# Gamma correction for enhance exposure || Resource from:
+# https://lindevs.com/apply-gamma-correction-to-an-image-using-opencv/
+def gammaCorrection(src, gamma):
+    invGamma = 1 / gamma
+
+    table = [((i / 255) ** invGamma) * 255 for i in range(256)]
+    table = np.array(table, np.uint8)
+
+    return cv2.LUT(src, table)
+
+
+# ----------------------- TEST -----------------------
 
 
 def test(trainPath, testPath, MSERValues):
@@ -565,7 +612,7 @@ def test(trainPath, testPath, MSERValues):
     print("\nGenerando mascaras a partir de imágenes de entrenamiento... \n(" + constants.TRAIN_PATH + ")")
 
     try:
-        meanMasks = calculateMeanMask()
+        meanMasks = calculateMeanMasks()
     except Exception as e:
         print("Ha ocurrido un problema generando las máscaras :(")
         print("\n"
@@ -655,7 +702,6 @@ def test(trainPath, testPath, MSERValues):
                     print("\nVa a comenzar el proceso de filtrado por correlación de máscaras...\n")
                     print("Realizando el filtrado...")
                     try:
-                        # detections -> (str filename; int x1; int y1; int x2; int y2; int signType; float score)
                         detectionResults = []
                         for detectionsPerFile in tqdm(detections):
                             for detection in detectionsPerFile:
@@ -786,6 +832,11 @@ def test(trainPath, testPath, MSERValues):
                                       "------------------------------------------------------------\n"
                                       "                  TEST TERMINADO CON ÉXITO                  \n"
                                       "------------------------------------------------------------\n")
+
+
+# --------------------------------------
+#              MAIN PROGRAM
+# --------------------------------------
 
 
 if __name__ == "__main__":
