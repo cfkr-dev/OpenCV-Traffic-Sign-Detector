@@ -637,7 +637,6 @@ def test(trainPath, testPath, MSERValues):
         print(e)
     else:
         print("Máscaras generadas con éxito")
-
         print("\nIniciando detector MSER...")
 
         try:
