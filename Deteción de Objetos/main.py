@@ -36,7 +36,7 @@ if __name__ == "__main__":
 
     mserValues = args.detector.split('_')
 
-    if len(mserValues) == 5 and mserValues[0] == 'MSER' and 0 < int(mserValues[1]) <= 40 and 0 < int(
+    if len(mserValues) != 0 and len(mserValues) == 5 and mserValues[0] == 'MSER' and 0 < int(mserValues[1]) <= 40 and 0 < int(
             mserValues[2]) <= 20000 and 0 < int(mserValues[
                                                     3]) <= 20000 and int(mserValues[2]) <= \
             int(mserValues[3]) and 0 < float(mserValues[4]) <= 1:
