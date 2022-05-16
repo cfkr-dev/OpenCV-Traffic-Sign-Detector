@@ -40,7 +40,7 @@ if __name__ == "__main__":
             mserValues[2]) <= 20000 and 0 < int(mserValues[
                                                     3]) <= 20000 and int(mserValues[2]) <= \
             int(mserValues[3]) and 0 < float(mserValues[4]) <= 1:
-        source.test(args.train_path, args.test_path,
+        source.test(args.train_path.replace('\\', '/'), args.test_path.replace('\\', '/'),
                     (int(mserValues[1]), int(mserValues[2]), int(mserValues[3]), float(mserValues[4])))
     else:
         print("\nNo se ha especificado el nombre de un detector existente")
