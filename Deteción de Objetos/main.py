@@ -12,6 +12,7 @@
 # -------------------------------------
 #                IMPORTS
 # -------------------------------------
+
 import constants
 import argparse
 import math
@@ -126,7 +127,7 @@ def MSERTrafficSignDetector(image, mser, file):
     croppedImageDetections = []
     for window in windowsBorders:
 
-        windowCords = makeWindowBiggerOrDiscardFakeDetections(window, 1.15)
+        windowCords = makeWindowBiggerOrDiscardFakeDetections(window, 1.30)
         if windowCords is not None:
             if windowCords == (890, 476, 946, 524):
                 print("aqui")
@@ -487,9 +488,23 @@ def getElementIndexFromList(l, element):
         index += 1
 
 
+def precision(truePositives, falsePositives):
+    if truePositives > 0 or falsePositives > 0:
+        return round(truePositives / (truePositives + falsePositives), 2)
+    else:
+        return "NaN"
+
+
+def recall(truePositives, falseNegatives):
+    if truePositives > 0 or falseNegatives > 0:
+        return round(truePositives / (truePositives + falseNegatives), 2)
+    else:
+        return "NaN"
+
+
 def score(truePositives, falsePositives, falseNegatives):
     if truePositives > 0 or falsePositives > 0 or falseNegatives > 0:
-        return (2 * truePositives) / ((2 * truePositives) + falsePositives + falseNegatives)
+        return round((2 * truePositives) / ((2 * truePositives) + falsePositives + falseNegatives), 2)
     else:
         return "NaN"
 
@@ -782,7 +797,11 @@ def test(trainPath, testPath, MSERValues):
                                     print("              TOTAL DETECTADAS INCORRECTAS:", totalIncorrectOnFile)
                                     print("                       TOTAL NO DETECTADAS:", totalNonDetectedOnFile)
                                     print("      VALOR DETECTADAS CORRECTAS ESPERADAS:", expectedTotalCorrectOnFile)
+                                    print("                                 PRECISIÓN:",
+                                          precision(totalCorrectOnFile, totalIncorrectOnFile))
                                     print("                           TASA DE ACIERTO:",
+                                          recall(totalCorrectOnFile, totalNonDetectedOnFile))
+                                    print("                                PUNTUACIÓN:",
                                           score(totalCorrectOnFile, totalIncorrectOnFile, totalNonDetectedOnFile))
                                     for detectionByTypeOnFile in detectionsByTypeOnFile:
                                         signType, totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile, totalNonDetectedByTypeOnFile, expectedTotalCorrectByTypeOnFile = detectionByTypeOnFile
@@ -796,7 +815,11 @@ def test(trainPath, testPath, MSERValues):
                                               totalNonDetectedByTypeOnFile)
                                         print("                           VALOR DETECTADAS CORRECTAS ESPERADAS:",
                                               expectedTotalCorrectByTypeOnFile)
+                                        print("                                                      PRECISIÓN:",
+                                              precision(totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile))
                                         print("                                                TASA DE ACIERTO:",
+                                              recall(totalCorrectByTypeOnFile, totalNonDetectedByTypeOnFile))
+                                        print("                                                     PUNTUACIÓN:",
                                               score(totalCorrectByTypeOnFile, totalIncorrectByTypeOnFile,
                                                     totalNonDetectedByTypeOnFile))
 
@@ -814,7 +837,11 @@ def test(trainPath, testPath, MSERValues):
                                     print("              TOTAL DETECTADAS INCORRECTAS:", totalIncorrectByType)
                                     print("                       TOTAL NO DETECTADAS:", totalNonDetectedByType)
                                     print("      VALOR DETECTADAS CORRECTAS ESPERADAS:", expectedTotalCorrectByType)
+                                    print("                                 PRECISIÓN:",
+                                          precision(totalCorrectByType, totalIncorrectByType))
                                     print("                           TASA DE ACIERTO:",
+                                          recall(totalCorrectByType, totalNonDetectedByType))
+                                    print("                                PUNTUACIÓN:",
                                           score(totalCorrectByType, totalIncorrectByType, totalNonDetectedByType))
 
                                 print("\n"
@@ -825,7 +852,11 @@ def test(trainPath, testPath, MSERValues):
                                 print("        TOTAL DETECTADAS INCORRECTAS:", totalIncorrect)
                                 print("                 TOTAL NO DETECTADAS:", totalNonDetected)
                                 print("VALOR DETECTADAS CORRECTAS ESPERADAS:", expectedTotalCorrect)
+                                print("                           PRECISIÓN:",
+                                      precision(totalCorrect, totalIncorrect))
                                 print("                     TASA DE ACIERTO:",
+                                      recall(totalCorrect, totalNonDetected))
+                                print("                          PUNTUACIÓN:",
                                       score(totalCorrect, totalIncorrect, totalNonDetected))
 
                                 print("\n"
@@ -843,12 +874,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Trains and executes a given detector over a set of testing images')
     parser.add_argument(
-        '--detector', type=str, nargs="?", default="MSER_15_200_2000_0.6",
+        '--detector', type=str, nargs="?", default="MSER_7_200_2000_0.15",
         help='Detector string name (default: MSER_15_200_2000_0.6)')
     parser.add_argument(
-        '--train_path', default="", help='Select the training data dir (default: train_jpg)')
+        '--train_path', default="train_jpg", help='Select the training data dir (default: train_jpg)')
     parser.add_argument(
-        '--test_path', default="", help='Select the testing data dir (default: test_alumnos_jpg)')
+        '--test_path', default="test_alumnos_jpg", help='Select the testing data dir (default: test_alumnos_jpg)')
 
     args = parser.parse_args()
 
