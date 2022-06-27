@@ -250,6 +250,26 @@ def gammaCorrection(src, gamma):
     return cv2.LUT(src, table)
 
 
+def loadImages(path):
+    images = []
+    filesOnDir = os.listdir(path)
+    for file in filesOnDir:
+        if file.endswith('.jpg'):
+            images.append((cv2.imread(path + '/' + file), file))
+    return images
+
+
+def orderCroppedImagesByImageFile(trainImages, trainResults):
+    trainCroppedImagesOrderByImageFile = dict((imageFileName, []) for imageFileName in trainImages)
+    for trainResult in trainResults:
+        trainResultCoords = trainResult[1], trainResult[2], trainResult[3], trainResult[4]
+        resizedCropImage = cv2.resize(
+            cropImageByCoords(trainResultCoords, cv2.imread(constants.TRAIN_PATH + '/' + trainResult[0])), (32, 32))
+        trainCroppedImagesOrderByImageFile[trainResult[0]].append(
+            (resizedCropImage, trainResultCoords, trainResult[0], trainResult[5]))
+    return trainCroppedImagesOrderByImageFile
+
+
 # Intersection over union algorithm || Resource form:
 # https://pyimagesearch.com/2016/11/07/intersection-over-union-iou-for-object-detection/
 def intersectionOverUnion(imageACoords, imageBCoords):
@@ -272,6 +292,14 @@ def intersectionOverUnion(imageACoords, imageBCoords):
     return iou
 
 
+def calculateHOGDescriptors(images, trainImages, hog):
+    imagesHOGDescriptors = dict((imageFileName, []) for imageFileName in trainImages)
+    for image in trainImages:
+        for detection in images[image[1]]:
+            imagesHOGDescriptors[image[1]].append(hog.compute(detection[0]))
+    return imagesHOGDescriptors
+
+
 # ----------------------- TRAIN DATA LOADING FUNCTIONS -----------------------
 
 def loadTrainRealResults(path):
@@ -285,31 +313,13 @@ def loadTrainRealResults(path):
     return realResults
 
 
-def loadTrainImages(path):
-    trainImages = []
-    filesOnDir = os.listdir(path)
-    for file in filesOnDir:
-        if file.endswith('.jpg'):
-            trainImages.append((cv2.imread(path + '/' + file), file))
-    return trainImages
-
-
-def OrderTrainResultsCroppedImagesByImageFile(trainImages, trainResults):
-    trainCroppedImagesOrderByImageFile = dict((imageFileName, []) for imageFileName in trainImages)
-    for trainResult in trainResults:
-        trainResultCoords = trainResult[1], trainResult[2], trainResult[3], trainResult[4]
-        resizedCropImage = cv2.resize(cropImageByCoords(trainResultCoords, cv2.imread(constants.TRAIN_PATH + '/' + trainResult[0])), (32, 32))
-        trainCroppedImagesOrderByImageFile[trainResult[0]].append((resizedCropImage, trainResultCoords, trainResult[0], trainResult[5]))
-    return trainCroppedImagesOrderByImageFile
-
-
 def calculateNegativeTrainResults(trainImages, positiveTrainResults, mser):
     # calculate all windows of all images with MSER detector from project 1
     allImagesMSERDetections = []
     for image in trainImages:
         MSERDetections = MSERTrafficSignDetector(image[0], mser, image[1])
         allImagesMSERDetections.extend(MSERDetections)
-    allImagesMSERDetectionsOrderByImageFile = OrderTrainResultsCroppedImagesByImageFile(trainImages, allImagesMSERDetections)
+    allImagesMSERDetectionsOrderByImageFile = orderCroppedImagesByImageFile(trainImages, allImagesMSERDetections)
 
     # use intersection over union to calculate negative results (IoU <= 0.2)
     negativeTrainResults = dict((imageFileName, []) for imageFileName in trainImages)
@@ -326,26 +336,39 @@ def calculateNegativeTrainResults(trainImages, positiveTrainResults, mser):
     return negativeTrainResults
 
 
-def calculateHOGDescriptors(images, trainImages):
-    imagesHOGDescriptors = dict((imageFileName, []) for imageFileName in trainImages)
-    for image in trainImages:
-        for detection in images[image[1]]:
-            imagesHOGDescriptors[image[1]].append()
-    pass
-
-
-def loadTrainData(mser):
-    trainImages = loadTrainImages(constants.TRAIN_PATH)
+def loadTrainData(mser, hog):
+    trainImages = loadImages(constants.TRAIN_PATH)
     trainResults = loadTrainRealResults(constants.TRAIN_PATH_REAL_RESULTS)
-    positiveTrainResults = OrderTrainResultsCroppedImagesByImageFile(trainImages, trainResults)
+    positiveTrainResults = orderCroppedImagesByImageFile(trainImages, trainResults)
     negativeTrainResults = calculateNegativeTrainResults(trainImages, positiveTrainResults, mser)
-    positiveTrainResultsHOGDescriptors = calculateHOGDescriptors(positiveTrainResults, trainImages)
-    negativeTrainResultsHOGDescriptors = calculateHOGDescriptors(negativeTrainResults, trainImages)
+    positiveTrainResultsHOGDescriptors = calculateHOGDescriptors(positiveTrainResults, trainImages, hog)
+    negativeTrainResultsHOGDescriptors = calculateHOGDescriptors(negativeTrainResults, trainImages, hog)
     return positiveTrainResults, negativeTrainResults, positiveTrainResultsHOGDescriptors, negativeTrainResultsHOGDescriptors
+
+
+# ----------------------- ALGORITHM EXECUTION -----------------------
+
+def execute(mser, hog):
+    positiveTrainResults, negativeTrainResults, positiveTrainResultsHOGDescriptors, negativeTrainResultsHOGDescriptors = loadTrainData(
+        mser, hog)
+
 
 # --------------------------------------
 #              MAIN PROGRAM
 # --------------------------------------
+
+
+def initializeMSER(mserParams):
+    delta, minArea, maxArea, maxVariation = mserParams
+    mser = cv2.MSER_create(delta=delta, minArea=minArea, maxArea=maxArea, maxVariation=maxVariation)
+    return mser
+
+
+def initializeHOG(hogParams):
+    winSize, blockSize, blockStride, cellSize, nbins, signedGradients = hogParams
+    hog = cv2.HOGDescriptor(winSize=winSize, blockSize=blockSize, blockStride=blockStride, cellSize=cellSize,
+                            nbins=nbins, signedGradients=signedGradients)
+    return hog
 
 
 if __name__ == "__main__":
@@ -360,7 +383,12 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # Cargar los datos de entrenamiento 
+    mserParams = (7, 200, 2000, 1)  # Añadir posibilidad de cambiar los parámetros de MSER
+    hogParams = ((64, 64), (16, 16), (8, 8), (8, 8), 9, True)  # Añadir posibilidad de cambiar los parámetros de HOG
+    mser = initializeMSER(mserParams)
+    hog = initializeHOG(hogParams)
+
+    # Cargar los datos de entrenamiento
     # args.train_path
 
     # Tratamiento de los datos
