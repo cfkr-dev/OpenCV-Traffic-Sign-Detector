@@ -59,7 +59,7 @@ def MSERTrafficSignDetector(image, mser, file):
             if windowCords == (890, 476, 946, 524):
                 print("aqui")
             croppedImageDetections.append(
-                (cv2.resize(cropImageByCoords(windowCords, image), (25, 25)), windowCords, file))
+                (cv2.resize(cropImageByCoords(windowCords, image), (25, 25)), windowCords, file, 0))
 
     # Clean duplicated images by pixel-similarity
     croppedImageDetections = cleanDuplicatedDetections(croppedImageDetections, False, 0.85)
@@ -276,20 +276,13 @@ def intersectionOverUnion(imageACoords, imageBCoords):
 
 def loadTrainRealResults(path):
     realResults = []
-    realResultsOrderByImageFile = {}
     file = open(path, "r")
     for line in tqdm(file):
         filename, x1, y1, x2, y2, signType = line.rstrip().split(';')
         realResults.append(
             (filename.split('.')[0] + '.jpg', int(x1), int(y1), int(x2), int(y2), calculateSignType(signType)))
     file.close()
-
-    for realResult in realResults:
-        if realResult[0] in realResultsOrderByImageFile.keys():
-            realResultsOrderByImageFile[realResult[0]].append(realResult)
-        else:
-            realResultsOrderByImageFile[realResult[0]] = []
-    return realResults, realResultsOrderByImageFile
+    return realResults
 
 
 def loadTrainImages(path):
@@ -301,38 +294,54 @@ def loadTrainImages(path):
     return trainImages
 
 
-def calculateRealTrainResultsCroppedImages(trainImages, realTrainResultsOrderByImageFile):
-    realTrainResultsCroppedImages = {}
+def OrderTrainResultsCroppedImagesByImageFile(trainImages, trainResults):
+    trainCroppedImagesOrderByImageFile = dict((imageFileName, []) for imageFileName in trainImages)
+    for trainResult in trainResults:
+        trainResultCoords = trainResult[1], trainResult[2], trainResult[3], trainResult[4]
+        resizedCropImage = cv2.resize(cropImageByCoords(trainResultCoords, cv2.imread(constants.TRAIN_PATH + '/' + trainResult[0])), (32, 32))
+        trainCroppedImagesOrderByImageFile[trainResult[0]].append((resizedCropImage, trainResultCoords, trainResult[0], trainResult[5]))
+    return trainCroppedImagesOrderByImageFile
+
+
+def calculateNegativeTrainResults(trainImages, positiveTrainResults, mser):
+    # calculate all windows of all images with MSER detector from project 1
+    allImagesMSERDetections = []
     for image in trainImages:
-        if image[1] in realTrainResultsOrderByImageFile.keys():
-            for realTrainResult in realTrainResultsOrderByImageFile[image[1]]:
-                if realTrainResult[0] in realTrainResultsCroppedImages.keys():
-                    realTrainResultCoords = realTrainResult[1], realTrainResult[2], realTrainResult[3], \
-                                            realTrainResult[4]
-                    resizedCropImage = cv2.resize(cropImageByCoords(realTrainResultCoords, image[0]), (32, 32))
-                    realTrainResultsCroppedImages[realTrainResult[0]].append(
-                        (resizedCropImage, realTrainResult[1], realTrainResult[2], realTrainResult[3],
-                         realTrainResult[4], realTrainResult[5]))
-                else:
-                    realTrainResultsCroppedImages[realTrainResult[0]] = []
-    return realTrainResultsCroppedImages
+        MSERDetections = MSERTrafficSignDetector(image[0], mser, image[1])
+        allImagesMSERDetections.extend(MSERDetections)
+    allImagesMSERDetectionsOrderByImageFile = OrderTrainResultsCroppedImagesByImageFile(trainImages, allImagesMSERDetections)
+
+    # use intersection over union to calculate negative results (IoU <= 0.2)
+    negativeTrainResults = dict((imageFileName, []) for imageFileName in trainImages)
+    for image in trainImages:
+        imageFileName = image[1]
+        for detectedImage in allImagesMSERDetectionsOrderByImageFile[imageFileName]:
+            lastScore = -math.inf
+            for positiveTrainResult in positiveTrainResults[imageFileName]:
+                intersectionOverUnionScore = intersectionOverUnion(detectedImage[1], positiveTrainResult[1])
+                if intersectionOverUnionScore >= lastScore:
+                    lastScore = intersectionOverUnionScore
+            if lastScore <= 0.2:
+                negativeTrainResults[imageFileName].append(detectedImage)
+    return negativeTrainResults
 
 
-def calculateNegativeTrainResultsCroppedImagesWithMSER(trainImages, realTrainResultsOrderByImageFile, mser):
-    # calculate all windows of an image with MSER detector from project 1
-    # use intersection over union to calculate negative windows set (IoU <= 0.8)
-    return None
+def calculateHOGDescriptors(images, trainImages):
+    imagesHOGDescriptors = dict((imageFileName, []) for imageFileName in trainImages)
+    for image in trainImages:
+        for detection in images[image[1]]:
+            imagesHOGDescriptors[image[1]].append()
+    pass
 
 
 def loadTrainData(mser):
-    realTrainResults, realTrainResultsOrderByImageFile = loadTrainRealResults(constants.TRAIN_PATH_REAL_RESULTS)
     trainImages = loadTrainImages(constants.TRAIN_PATH)
-
-    positiveTrainResultsCroppedImages = calculateRealTrainResultsCroppedImages(trainImages,
-                                                                               realTrainResultsOrderByImageFile)
-    negativeTrainResultsCroppedImages = calculateNegativeTrainResultsCroppedImagesWithMSER(trainImages,
-                                                                                           realTrainResultsOrderByImageFile,mser)
-
+    trainResults = loadTrainRealResults(constants.TRAIN_PATH_REAL_RESULTS)
+    positiveTrainResults = OrderTrainResultsCroppedImagesByImageFile(trainImages, trainResults)
+    negativeTrainResults = calculateNegativeTrainResults(trainImages, positiveTrainResults, mser)
+    positiveTrainResultsHOGDescriptors = calculateHOGDescriptors(positiveTrainResults, trainImages)
+    negativeTrainResultsHOGDescriptors = calculateHOGDescriptors(negativeTrainResults, trainImages)
+    return positiveTrainResults, negativeTrainResults, positiveTrainResultsHOGDescriptors, negativeTrainResultsHOGDescriptors
 
 # --------------------------------------
 #              MAIN PROGRAM
