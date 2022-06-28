@@ -14,6 +14,9 @@
 # -------------------------------------
 
 import random
+
+from sklearn.metrics import confusion_matrix, classification_report
+
 import constants
 import argparse
 import math
@@ -402,7 +405,7 @@ def predictProbabilityLDAClassifiers(LDAClassifiers, detectionHOGDescriptor, tol
     probabilities = []
     for signType in range(1, 7):
         probabilities.append((LDAClassifiers[signType - 1].predict_proba(detectionHOGDescriptor)[0], signType))
-        probabilities.sort(key=lambda x: x[0], reverse=True)
+    probabilities.sort(key=lambda x: x[0], reverse=True)
     return probabilities[0][1] if probabilities[0][0] >= tolerance else 0
 
 
@@ -426,23 +429,27 @@ def execute(mser, hog):
     LDAFittedClassifiers = fitLDAClassifiers(LDAClassifiers, positiveTrainResultsOrderBySignType,
                                              negativeTrainResultsHOGDescriptors)
 
-    testDetectionsHOGDescriptors = random.shuffle(list(positiveTestResultsHOGDescriptors.values()) + list(negativeTestResultsHOGDescriptors.values()))
+    testDataHOGDescriptors = list(positiveTestResultsHOGDescriptors.values()) + list(negativeTestResultsHOGDescriptors.values())
+    random.shuffle(testDataHOGDescriptors)
 
-    truePositivesDetections = []
-    falsePositivesDetections = []
-    falseNegativesDetections = []
-    trueNegativesDetections = []
+    trueSignTypes = []
+    predictedSignTypes = []
 
-    for detectionHOGDescriptor in tqdm(testDetectionsHOGDescriptors):
+    for detectionHOGDescriptor in testDataHOGDescriptors:
         signType = predictProbabilityLDAClassifiers(LDAFittedClassifiers, detectionHOGDescriptor, 0.5)
-        if signType == detectionHOGDescriptor[3]:
-            truePositivesDetections.append(detectionHOGDescriptor)
-        elif detectionHOGDescriptor != 0 and signType == 0:
-            falseNegativesDetections.append(detectionHOGDescriptor)
-        elif detectionHOGDescriptor == 0 and signType != 0:
-            falsePositivesDetections.append(detectionHOGDescriptor)
-        else:
-            trueNegativesDetections.append(detectionHOGDescriptor)
+        trueSignTypes.append(detectionHOGDescriptor[3])
+        predictedSignTypes.append(signType)
+
+    LDA_HOG_ConfusionMatrix = confusion_matrix(trueSignTypes, predictedSignTypes)
+
+    # plot_confusion_matrix(LDA_HOG_ConfusionMatrix, classes=range(1, 7), normalize=True, title='LDA HOG Confusion
+    # Matrix')
+
+    signNames = ['NoSeñal', 'Prohibicion', 'Peligro', 'Stop', 'DirProhibida', 'Ceda Paso', 'DirObligatoria']
+    LDA_HOG_ClassificationReport = classification_report(trueSignTypes, predictedSignTypes, target_names=signNames)
+
+    print(LDA_HOG_ClassificationReport)
+
 
 
 # --------------------------------------
