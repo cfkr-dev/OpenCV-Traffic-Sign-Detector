@@ -12,15 +12,17 @@
 # -------------------------------------
 #                IMPORTS
 # -------------------------------------
+
+import random
 import constants
 import argparse
 import math
 import os
-import shutil
 import cv2
 import numpy as np
 from time import sleep
 from tqdm import tqdm  # Loop progress bar || Resource from: https://github.com/tqdm/tqdm
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 
 
 # -----------------------------------
@@ -155,7 +157,7 @@ def checkIfImageIsDuplicatedOrMergeSimilarOnes(image, detections, tolerance, isS
             elif tolerance * 0.8823 <= similarity <= tolerance:
                 image = (
                     cv2.addWeighted(image[0], 0.5, detection[0], 0.5, 0.0), meanCoords(image[1], detection[1]),
-                    detection[2])
+                    detection[2], detection[3])
                 deletions.append(detection)
 
     return image, deletions
@@ -296,8 +298,31 @@ def calculateHOGDescriptors(images, trainImages, hog):
     imagesHOGDescriptors = dict((imageFileName, []) for imageFileName in trainImages)
     for image in trainImages:
         for detection in images[image[1]]:
-            imagesHOGDescriptors[image[1]].append(hog.compute(detection[0]))
+            imagesHOGDescriptors[image[1]].append((hog.compute(detection[0]), detection[1], detection[2], detection[3]))
     return imagesHOGDescriptors
+
+
+def sortImagesBySignType(images, trainImages):
+    imagesBySignType = dict((signType, []) for signType in range(1, 7))
+    for image in trainImages:
+        for detection in images[image[1]]:
+            imagesBySignType[detection[5]].append(detection)
+    return imagesBySignType
+
+
+def getAllDescriptors(detections):
+    descriptors = []
+    for detection in detections:
+        descriptors.append(detection[0])
+    return descriptors
+
+def getElementIndexFromList(l, element):
+    # Consider "l" contains "element"
+    index = 0
+    for x in l:
+        if np.array_equal(x[0], element):
+            return index
+        index += 1
 
 
 # ----------------------- TRAIN DATA LOADING FUNCTIONS -----------------------
@@ -336,21 +361,88 @@ def calculateNegativeTrainResults(trainImages, positiveTrainResults, mser):
     return negativeTrainResults
 
 
-def loadTrainData(mser, hog):
+def loadTrainData(mser):
     trainImages = loadImages(constants.TRAIN_PATH)
     trainResults = loadTrainRealResults(constants.TRAIN_PATH_REAL_RESULTS)
     positiveTrainResults = orderCroppedImagesByImageFile(trainImages, trainResults)
     negativeTrainResults = calculateNegativeTrainResults(trainImages, positiveTrainResults, mser)
-    positiveTrainResultsHOGDescriptors = calculateHOGDescriptors(positiveTrainResults, trainImages, hog)
-    negativeTrainResultsHOGDescriptors = calculateHOGDescriptors(negativeTrainResults, trainImages, hog)
-    return positiveTrainResults, negativeTrainResults, positiveTrainResultsHOGDescriptors, negativeTrainResultsHOGDescriptors
+    return positiveTrainResults, negativeTrainResults, trainImages
+
+
+# ----------------------- TEST DATA LOADING FUNCTIONS -----------------------
+
+def extractTestResults(trainResults, percentage):
+    randomDetectionsOrderByImageFile = dict((imageFileName, []) for imageFileName in trainResults.keys())
+    randomDetections = random.sample(list(trainResults.values()), int(len(trainResults) * percentage))
+    for randomDetection in randomDetections:
+        randomDetectionsOrderByImageFile[randomDetection[2]].append(randomDetection)
+        del trainResults[randomDetection[2]][getElementIndexFromList(trainResults[randomDetection[2]], randomDetection)]
+    return randomDetectionsOrderByImageFile, trainResults
+
+
+# ----------------------- LDA DIMENSIONAL REDUCTION FUNCTIONS -----------------------
+
+def createLDAClassifiers():
+    LDAClassifierProhibicionType = LinearDiscriminantAnalysis()
+    LDAClassifierPeligroType = LinearDiscriminantAnalysis()
+    LDAClassifierStopType = LinearDiscriminantAnalysis()
+    LDAClassifierDirProhibidaType = LinearDiscriminantAnalysis()
+    LDAClassifierCedaPasoType = LinearDiscriminantAnalysis()
+    LDAClassifierDirObligatoriaType = LinearDiscriminantAnalysis()
+    return LDAClassifierProhibicionType, LDAClassifierPeligroType, LDAClassifierStopType, LDAClassifierDirProhibidaType, LDAClassifierCedaPasoType, LDAClassifierDirObligatoriaType
+
+
+def fitLDAClassifiers(LDAClassifiers, positiveHOGDescriptors, negativeHOGDescriptors):
+    for signType in range(1, 7):
+        return LDAClassifiers[signType - 1].fit(
+            getAllDescriptors(positiveHOGDescriptors[signType]) + getAllDescriptors(list(negativeHOGDescriptors.values())))
+
+
+def predictProbabilityLDAClassifiers(LDAClassifiers, detectionHOGDescriptor, tolerance):
+    probabilities = []
+    for signType in range(1, 7):
+        probabilities.append((LDAClassifiers[signType - 1].predict_proba(detectionHOGDescriptor)[0], signType))
+        probabilities.sort(key=lambda x: x[0], reverse=True)
+    return probabilities[0][1] if probabilities[0][0] >= tolerance else 0
 
 
 # ----------------------- ALGORITHM EXECUTION -----------------------
 
+
 def execute(mser, hog):
-    positiveTrainResults, negativeTrainResults, positiveTrainResultsHOGDescriptors, negativeTrainResultsHOGDescriptors = loadTrainData(
-        mser, hog)
+    positiveTrainResults, negativeTrainResults, trainImages = loadTrainData(mser)
+    positiveTestResults, positiveTrainResults = extractTestResults(positiveTrainResults, 0.1)
+    negativeTestResults, negativeTrainResults = extractTestResults(negativeTrainResults, 0.1)
+
+    positiveTrainResultsHOGDescriptors = calculateHOGDescriptors(positiveTrainResults, trainImages, hog)
+    negativeTrainResultsHOGDescriptors = calculateHOGDescriptors(negativeTrainResults, trainImages, hog)
+    positiveTestResultsHOGDescriptors = calculateHOGDescriptors(positiveTestResults, trainImages, hog)
+    negativeTestResultsHOGDescriptors = calculateHOGDescriptors(negativeTestResults, trainImages, hog)
+
+    positiveTrainResultsOrderBySignType = sortImagesBySignType(positiveTrainResultsHOGDescriptors, trainImages)
+
+    LDAClassifiers = createLDAClassifiers()
+
+    LDAFittedClassifiers = fitLDAClassifiers(LDAClassifiers, positiveTrainResultsOrderBySignType,
+                                             negativeTrainResultsHOGDescriptors)
+
+    testDetectionsHOGDescriptors = random.shuffle(list(positiveTestResultsHOGDescriptors.values()) + list(negativeTestResultsHOGDescriptors.values()))
+
+    truePositivesDetections = []
+    falsePositivesDetections = []
+    falseNegativesDetections = []
+    trueNegativesDetections = []
+
+    for detectionHOGDescriptor in tqdm(testDetectionsHOGDescriptors):
+        signType = predictProbabilityLDAClassifiers(LDAFittedClassifiers, detectionHOGDescriptor, 0.5)
+        if signType == detectionHOGDescriptor[3]:
+            truePositivesDetections.append(detectionHOGDescriptor)
+        elif detectionHOGDescriptor != 0 and signType == 0:
+            falseNegativesDetections.append(detectionHOGDescriptor)
+        elif detectionHOGDescriptor == 0 and signType != 0:
+            falsePositivesDetections.append(detectionHOGDescriptor)
+        else:
+            trueNegativesDetections.append(detectionHOGDescriptor)
 
 
 # --------------------------------------
@@ -360,7 +452,7 @@ def execute(mser, hog):
 
 def initializeMSER(mserParams):
     delta, minArea, maxArea, maxVariation = mserParams
-    mser = cv2.MSER_create(delta=delta, minArea=minArea, maxArea=maxArea, maxVariation=maxVariation)
+    mser = cv2.MSER_create(delta=delta, min_area=minArea, max_area=maxArea, max_variation=maxVariation)
     return mser
 
 
@@ -384,9 +476,19 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     mserParams = (7, 200, 2000, 1)  # Añadir posibilidad de cambiar los parámetros de MSER
-    hogParams = ((64, 64), (16, 16), (8, 8), (8, 8), 9, True)  # Añadir posibilidad de cambiar los parámetros de HOG
+
+    # winSize: Size of the image window.
+    # blockSize: Size of the blocks. (2 x cellSize)
+    # blockStride: Stride between blocks. (50% of blockSize)
+    # cellSize: Size of the cells. (winSize must be divisible by cellSize)
+    # nbins: Number of bins. (9 default)
+    # signedGradients: Use signed gradients. (true default)
+    hogParams = ((32, 32), (16, 16), (8, 8), (8, 8), 9, True)  # Añadir posibilidad de cambiar los parámetros de HOG
+
     mser = initializeMSER(mserParams)
     hog = initializeHOG(hogParams)
+
+    execute(mser, hog)
 
     # Cargar los datos de entrenamiento
     # args.train_path
