@@ -12,10 +12,10 @@
 # -------------------------------------
 #                IMPORTS
 # -------------------------------------
-
+import pickle
 import random
 
-from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.model_selection import train_test_split
 
 import constants
 import argparse
@@ -26,6 +26,7 @@ import numpy as np
 from time import sleep
 from tqdm import tqdm  # Loop progress bar || Resource from: https://github.com/tqdm/tqdm
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.metrics import confusion_matrix, classification_report, ConfusionMatrixDisplay
 
 
 # -----------------------------------
@@ -58,13 +59,10 @@ def MSERTrafficSignDetector(image, mser, file):
 
     croppedImageDetections = []
     for window in windowsBorders:
-
         windowCords = makeWindowBiggerOrDiscardFakeDetections(window, 1.15)
         if windowCords is not None:
-            if windowCords == (890, 476, 946, 524):
-                print("aqui")
             croppedImageDetections.append(
-                (cv2.resize(cropImageByCoords(windowCords, image), (25, 25)), windowCords, file, 0))
+                (cv2.resize(cropImageByCoords(windowCords, image), (32, 32)), windowCords, file, 0))
 
     # Clean duplicated images by pixel-similarity
     croppedImageDetections = cleanDuplicatedDetections(croppedImageDetections, False, 0.85)
@@ -183,15 +181,6 @@ def meanCoords(coordsA, coordsB):
     return (x1A + x1B) // 2, (y1A + y1B) // 2, (x2A + x2B) // 2, (y2A + y2B) // 2
 
 
-def getElementIndexFromList(l, element):
-    # Consider "l" contains "element"
-    index = 0
-    for x in l:
-        if np.array_equal(x[0], element):
-            return index
-        index += 1
-
-
 def calculateSignType(signType):
     prohibicion = constants.PROHIBICION
     peligro = constants.PELIGRO
@@ -256,22 +245,24 @@ def gammaCorrection(src, gamma):
 
 
 def loadImages(path):
-    images = []
+    images = {}
     filesOnDir = os.listdir(path)
-    for file in filesOnDir:
+    for file in tqdm(filesOnDir):
         if file.endswith('.jpg'):
-            images.append((cv2.imread(path + '/' + file), file))
+            images[file] = cv2.imread(path + '/' + file)
+    sleep(0.02)
     return images
 
 
 def orderCroppedImagesByImageFile(trainImages, trainResults):
-    trainCroppedImagesOrderByImageFile = dict((imageFileName, []) for imageFileName in trainImages)
-    for trainResult in trainResults:
+    trainCroppedImagesOrderByImageFile = dict((imageFileName, []) for imageFileName in trainImages.keys())
+    for trainResult in tqdm(trainResults):
         trainResultCoords = trainResult[1], trainResult[2], trainResult[3], trainResult[4]
         resizedCropImage = cv2.resize(
-            cropImageByCoords(trainResultCoords, cv2.imread(constants.TRAIN_PATH + '/' + trainResult[0])), (32, 32))
+            cropImageByCoords(trainResultCoords, trainImages[trainResult[0]]), (32, 32))
         trainCroppedImagesOrderByImageFile[trainResult[0]].append(
             (resizedCropImage, trainResultCoords, trainResult[0], trainResult[5]))
+    sleep(0.02)
     return trainCroppedImagesOrderByImageFile
 
 
@@ -297,27 +288,28 @@ def intersectionOverUnion(imageACoords, imageBCoords):
     return iou
 
 
-def calculateHOGDescriptors(images, trainImages, hog):
-    imagesHOGDescriptors = dict((imageFileName, []) for imageFileName in trainImages)
-    for image in trainImages:
-        for detection in images[image[1]]:
-            imagesHOGDescriptors[image[1]].append((hog.compute(detection[0]), detection[1], detection[2], detection[3]))
+def calculateHOGDescriptors(trainImages, hog):
+    imagesHOGDescriptors = dict((signType, []) for signType in range(0, 7))
+    for signType in trainImages.keys():
+        for detection in trainImages[signType]:
+            imagesHOGDescriptors[signType].append((hog.compute(detection[0]), detection[1], detection[2], detection[3]))
     return imagesHOGDescriptors
 
 
 def sortImagesBySignType(images, trainImages):
     imagesBySignType = dict((signType, []) for signType in range(1, 7))
-    for image in trainImages:
-        for detection in images[image[1]]:
-            imagesBySignType[detection[5]].append(detection)
+    for image in trainImages.keys():
+        for detection in images[image]:
+            imagesBySignType[detection[3]].append(detection)
     return imagesBySignType
 
 
 def getAllDescriptors(detections):
     descriptors = []
     for detection in detections:
-        descriptors.append(detection[0])
+        descriptors.append((detection[0], detection[3]))
     return descriptors
+
 
 def getElementIndexFromList(l, element):
     # Consider "l" contains "element"
@@ -328,6 +320,26 @@ def getElementIndexFromList(l, element):
         index += 1
 
 
+def initializeMSER(mserParams):
+    delta, minArea, maxArea, maxVariation = mserParams
+    mser = cv2.MSER_create(delta=delta, min_area=minArea, max_area=maxArea, max_variation=maxVariation)
+    return mser
+
+
+def initializeHOG(hogParams):
+    winSize, blockSize, blockStride, cellSize, nbins, signedGradient = hogParams
+    hog = cv2.HOGDescriptor(_winSize=winSize, _blockSize=blockSize, _blockStride=blockStride, _cellSize=cellSize,
+                            _nbins=nbins, _signedGradient=signedGradient)
+    return hog
+
+
+def randomBinaryArray(zerosNumber, noZerosNumber, signType):
+    arr = np.zeros(zerosNumber)
+    arr[:noZerosNumber] = signType
+    np.random.shuffle(arr)
+    return arr
+
+
 # ----------------------- TRAIN DATA LOADING FUNCTIONS -----------------------
 
 def loadTrainRealResults(path):
@@ -335,52 +347,89 @@ def loadTrainRealResults(path):
     file = open(path, "r")
     for line in tqdm(file):
         filename, x1, y1, x2, y2, signType = line.rstrip().split(';')
-        realResults.append(
-            (filename.split('.')[0] + '.jpg', int(x1), int(y1), int(x2), int(y2), calculateSignType(signType)))
+        codifiedSignType = calculateSignType(signType)
+        if codifiedSignType is not None:
+            realResults.append((filename.split('.')[0] + '.jpg', int(x1), int(y1), int(x2), int(y2), codifiedSignType))
+    sleep(0.02)
     file.close()
     return realResults
 
 
-def calculateNegativeTrainResults(trainImages, positiveTrainResults, mser):
-    # calculate all windows of all images with MSER detector from project 1
-    allImagesMSERDetections = []
-    for image in trainImages:
-        MSERDetections = MSERTrafficSignDetector(image[0], mser, image[1])
-        allImagesMSERDetections.extend(MSERDetections)
-    allImagesMSERDetectionsOrderByImageFile = orderCroppedImagesByImageFile(trainImages, allImagesMSERDetections)
+def calculateNegativeTrainResults(trainImages, positiveTrainResults, mser, loadHack):
+    if not loadHack:
+        # calculate all windows of all images with MSER detector from project 1
+        allImagesMSERDetections = dict((imageFileName, []) for imageFileName in trainImages.keys())
+        for fileName, image in tqdm(trainImages.items()):
+            MSERDetections = MSERTrafficSignDetector(image, mser, fileName)
+            allImagesMSERDetections[fileName] = MSERDetections
+        sleep(0.02)
 
-    # use intersection over union to calculate negative results (IoU <= 0.2)
-    negativeTrainResults = dict((imageFileName, []) for imageFileName in trainImages)
-    for image in trainImages:
-        imageFileName = image[1]
-        for detectedImage in allImagesMSERDetectionsOrderByImageFile[imageFileName]:
+        with open("MSER.val", "wb") as outfile:
+            # "wb" argument opens the file in binary mode
+            pickle.dump(allImagesMSERDetections, outfile)
+    else:
+        with open("MSER.val", "rb") as infile:
+            allImagesMSERDetections = pickle.load(infile)
+    # use intersection over union to calculate negative results (IoU <= 0.5)
+    negativeTrainResults = dict((imageFileName, []) for imageFileName in trainImages.keys())
+    for fileName in tqdm(trainImages.keys()):
+        for detectedImage in allImagesMSERDetections[fileName]:
             lastScore = -math.inf
-            for positiveTrainResult in positiveTrainResults[imageFileName]:
+            for positiveTrainResult in positiveTrainResults[fileName]:
                 intersectionOverUnionScore = intersectionOverUnion(detectedImage[1], positiveTrainResult[1])
                 if intersectionOverUnionScore >= lastScore:
                     lastScore = intersectionOverUnionScore
-            if lastScore <= 0.2:
-                negativeTrainResults[imageFileName].append(detectedImage)
+            if lastScore <= 0.5:
+                negativeTrainResults[fileName].append(detectedImage)
     return negativeTrainResults
+
+
+def extractDataOrderBySignType(trainResultsOrderByImageFile, signType):
+    data = []
+    for imageFileName in trainResultsOrderByImageFile.keys():
+        for detection in trainResultsOrderByImageFile[imageFileName]:
+            if detection[3] == signType:
+                data.append(detection)
+    return data
+
+
+def formatTrainDataBySignType(positiveTrainResultsOrderByImageFile, negativeTrainResultsOrderByImageFile):
+    trainDataBySignType = dict((signType, []) for signType in range(0, 7))
+    for signType in range(0, 7):
+        if signType == 0:
+            trainDataBySignType[signType] = extractDataOrderBySignType(negativeTrainResultsOrderByImageFile, signType)
+        else:
+            trainDataBySignType[signType] = extractDataOrderBySignType(positiveTrainResultsOrderByImageFile, signType)
+        random.shuffle(trainDataBySignType[signType])
+    return trainDataBySignType
+
+
+def calculateTrainDataOrderBySignType(trainImages, trainResults, mser, loadingHack):
+    positiveTrainResultsOrderByImageFile = orderCroppedImagesByImageFile(trainImages, trainResults)
+    negativeTrainResultsOrderByImageFile = calculateNegativeTrainResults(trainImages,
+                                                                         positiveTrainResultsOrderByImageFile, mser,
+                                                                         loadingHack)
+    trainDataOrderBySignType = formatTrainDataBySignType(positiveTrainResultsOrderByImageFile,
+                                                         negativeTrainResultsOrderByImageFile)
+    return trainDataOrderBySignType
 
 
 def loadTrainData(mser):
     trainImages = loadImages(constants.TRAIN_PATH)
     trainResults = loadTrainRealResults(constants.TRAIN_PATH_REAL_RESULTS)
-    positiveTrainResults = orderCroppedImagesByImageFile(trainImages, trainResults)
-    negativeTrainResults = calculateNegativeTrainResults(trainImages, positiveTrainResults, mser)
-    return positiveTrainResults, negativeTrainResults, trainImages
+    trainDataOrderBySignType = calculateTrainDataOrderBySignType(trainImages, trainResults, mser, True)
+    return trainDataOrderBySignType, trainImages
 
 
 # ----------------------- TEST DATA LOADING FUNCTIONS -----------------------
 
 def extractTestResults(trainResults, percentage):
-    randomDetectionsOrderByImageFile = dict((imageFileName, []) for imageFileName in trainResults.keys())
-    randomDetections = random.sample(list(trainResults.values()), int(len(trainResults) * percentage))
-    for randomDetection in randomDetections:
-        randomDetectionsOrderByImageFile[randomDetection[2]].append(randomDetection)
-        del trainResults[randomDetection[2]][getElementIndexFromList(trainResults[randomDetection[2]], randomDetection)]
-    return randomDetectionsOrderByImageFile, trainResults
+    trainDetectionsOrderBySignType = dict((signType, []) for signType in range(0, 7))
+    testDetectionsOrderBySignType = dict((signType, []) for signType in range(0, 7))
+    for signType in range(0, 7):
+        trainDetectionsOrderBySignType[signType], testDetectionsOrderBySignType[signType] = train_test_split(
+            trainResults[signType], shuffle=False, test_size=percentage)
+    return trainDetectionsOrderBySignType, testDetectionsOrderBySignType
 
 
 # ----------------------- LDA DIMENSIONAL REDUCTION FUNCTIONS -----------------------
@@ -395,10 +444,24 @@ def createLDAClassifiers():
     return LDAClassifierProhibicionType, LDAClassifierPeligroType, LDAClassifierStopType, LDAClassifierDirProhibidaType, LDAClassifierCedaPasoType, LDAClassifierDirObligatoriaType
 
 
-def fitLDAClassifiers(LDAClassifiers, positiveHOGDescriptors, negativeHOGDescriptors):
+def mixTrainData(trainDataHOGDescriptors, randomTagsBySignType):
+    data = []
+    for tag in randomTagsBySignType:
+        sample = trainDataHOGDescriptors[tag][:].pop()
+        data.append(sample[0])
+    return data
+
+
+def fitLDAClassifiers(LDAClassifiers, trainDataHOGDescriptors):
+    transformedDataBySignType = dict((signType, []) for signType in range(0, 6))
     for signType in range(1, 7):
-        return LDAClassifiers[signType - 1].fit(
-            getAllDescriptors(positiveHOGDescriptors[signType]) + getAllDescriptors(list(negativeHOGDescriptors.values())))
+        randomTagsBySignType = randomBinaryArray(
+            len(trainDataHOGDescriptors[0]) + len(trainDataHOGDescriptors[signType]),
+            len(trainDataHOGDescriptors[signType]), signType)
+        mixedTrainDataHOGDescriptors = mixTrainData(trainDataHOGDescriptors, randomTagsBySignType)
+        transformedDataBySignType[signType - 1] = LDAClassifiers[signType - 1].fit_transform(
+            mixedTrainDataHOGDescriptors, randomTagsBySignType)
+    return transformedDataBySignType
 
 
 def predictProbabilityLDAClassifiers(LDAClassifiers, detectionHOGDescriptor, tolerance):
@@ -409,111 +472,100 @@ def predictProbabilityLDAClassifiers(LDAClassifiers, detectionHOGDescriptor, tol
     return probabilities[0][1] if probabilities[0][0] >= tolerance else 0
 
 
-# ----------------------- ALGORITHM EXECUTION -----------------------
+# ----------------------- TEST LDA + HOG -----------------------
 
 
-def execute(mser, hog):
-    positiveTrainResults, negativeTrainResults, trainImages = loadTrainData(mser)
-    positiveTestResults, positiveTrainResults = extractTestResults(positiveTrainResults, 0.1)
-    negativeTestResults, negativeTrainResults = extractTestResults(negativeTrainResults, 0.1)
+def testLDA_HOG(trainPath, testPath, mserParams, hogParams):
+    constants.TRAIN_PATH = trainPath
+    constants.TEST_PATH = testPath
+    constants.TRAIN_PATH_REAL_RESULTS = trainPath + "/gt.txt"
+    constants.TEST_PATH_REAL_RESULTS = testPath + "/gt.txt"
 
-    positiveTrainResultsHOGDescriptors = calculateHOGDescriptors(positiveTrainResults, trainImages, hog)
-    negativeTrainResultsHOGDescriptors = calculateHOGDescriptors(negativeTrainResults, trainImages, hog)
-    positiveTestResultsHOGDescriptors = calculateHOGDescriptors(positiveTestResults, trainImages, hog)
-    negativeTestResultsHOGDescriptors = calculateHOGDescriptors(negativeTestResults, trainImages, hog)
+    mser = initializeMSER(mserParams)
+    hog = initializeHOG(hogParams)
 
-    positiveTrainResultsOrderBySignType = sortImagesBySignType(positiveTrainResultsHOGDescriptors, trainImages)
+    trainDataOrderBySignType, trainImages = loadTrainData(mser)
+
+    trainDataOrderBySignType, testDataOrderBySignType = extractTestResults(trainDataOrderBySignType, 0.1)
+
+    trainDataHOGDescriptorsOrderBySignType = calculateHOGDescriptors(trainDataOrderBySignType, hog)
+    testDataHOGDescriptorsOrderBySignType = calculateHOGDescriptors(testDataOrderBySignType, hog)
 
     LDAClassifiers = createLDAClassifiers()
 
-    LDAFittedClassifiers = fitLDAClassifiers(LDAClassifiers, positiveTrainResultsOrderBySignType,
-                                             negativeTrainResultsHOGDescriptors)
+    LDAFittedClassifiers = fitLDAClassifiers(LDAClassifiers, trainDataHOGDescriptorsOrderBySignType)
 
-    testDataHOGDescriptors = list(positiveTestResultsHOGDescriptors.values()) + list(negativeTestResultsHOGDescriptors.values())
-    random.shuffle(testDataHOGDescriptors)
-
-    trueSignTypes = []
-    predictedSignTypes = []
-
-    for detectionHOGDescriptor in testDataHOGDescriptors:
-        signType = predictProbabilityLDAClassifiers(LDAFittedClassifiers, detectionHOGDescriptor, 0.5)
-        trueSignTypes.append(detectionHOGDescriptor[3])
-        predictedSignTypes.append(signType)
-
-    LDA_HOG_ConfusionMatrix = confusion_matrix(trueSignTypes, predictedSignTypes)
-
-    # plot_confusion_matrix(LDA_HOG_ConfusionMatrix, classes=range(1, 7), normalize=True, title='LDA HOG Confusion
-    # Matrix')
-
-    signNames = ['NoSeñal', 'Prohibicion', 'Peligro', 'Stop', 'DirProhibida', 'Ceda Paso', 'DirObligatoria']
-    LDA_HOG_ClassificationReport = classification_report(trueSignTypes, predictedSignTypes, target_names=signNames)
-
-    print(LDA_HOG_ClassificationReport)
-
+    # testDataHOGDescriptors = list(positiveTestResultsHOGDescriptors.values()) + list(
+    #     negativeTestResultsHOGDescriptors.values())
+    # random.shuffle(testDataHOGDescriptors)
+    #
+    # trueSignTypes = []
+    # predictedSignTypes = []
+    #
+    # for detectionHOGDescriptor in testDataHOGDescriptors:
+    #     signType = predictProbabilityLDAClassifiers(LDAFittedClassifiers, detectionHOGDescriptor, 0.5)
+    #     trueSignTypes.append(detectionHOGDescriptor[3])
+    #     predictedSignTypes.append(signType)
+    #
+    # LDA_HOG_ConfusionMatrix = confusion_matrix(trueSignTypes, predictedSignTypes)
+    # ConfusionMatrixDisplay(confusion_matrix=LDA_HOG_ConfusionMatrix, display_labels=constants.SIGN_NAMES)
+    #
+    # LDA_HOG_ClassificationReport = classification_report(trueSignTypes, predictedSignTypes,
+    #                                                      target_names=constants.SIGN_NAMES)
+    # print(LDA_HOG_ClassificationReport)
 
 
 # --------------------------------------
 #              MAIN PROGRAM
 # --------------------------------------
 
+trainPath = 'train_jpg'
+testPath = 'test_alumnos_jpg'
+mserParams = (7, 200, 2000, 1)
+hogParams = ((32, 32), (16, 16), (8, 8), (8, 8), 9, True)
+testLDA_HOG(trainPath, testPath, mserParams, hogParams)
 
-def initializeMSER(mserParams):
-    delta, minArea, maxArea, maxVariation = mserParams
-    mser = cv2.MSER_create(delta=delta, min_area=minArea, max_area=maxArea, max_variation=maxVariation)
-    return mser
-
-
-def initializeHOG(hogParams):
-    winSize, blockSize, blockStride, cellSize, nbins, signedGradients = hogParams
-    hog = cv2.HOGDescriptor(winSize=winSize, blockSize=blockSize, blockStride=blockStride, cellSize=cellSize,
-                            nbins=nbins, signedGradients=signedGradients)
-    return hog
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description='Entrena sober train y ejecuta el clasificador sobre imgs de test')
-    parser.add_argument(
-        '--train_path', type=str, default="./train", help='Path al directorio de imgs de train')
-    parser.add_argument(
-        '--test_path', type=str, default="./test", help='Path al directorio de imgs de test')
-    parser.add_argument(
-        '--classifier', type=str, default="BAYES", help='String con el nombre del clasificador')
-
-    args = parser.parse_args()
-
-    mserParams = (7, 200, 2000, 1)  # Añadir posibilidad de cambiar los parámetros de MSER
-
-    # winSize: Size of the image window.
-    # blockSize: Size of the blocks. (2 x cellSize)
-    # blockStride: Stride between blocks. (50% of blockSize)
-    # cellSize: Size of the cells. (winSize must be divisible by cellSize)
-    # nbins: Number of bins. (9 default)
-    # signedGradients: Use signed gradients. (true default)
-    hogParams = ((32, 32), (16, 16), (8, 8), (8, 8), 9, True)  # Añadir posibilidad de cambiar los parámetros de HOG
-
-    mser = initializeMSER(mserParams)
-    hog = initializeHOG(hogParams)
-
-    execute(mser, hog)
-
-    # Cargar los datos de entrenamiento
-    # args.train_path
-
-    # Tratamiento de los datos
-
-    # Crear el clasificador 
-    if args.classifier == "BAYES":
-        # detector = ...
-        None
-    else:
-        raise ValueError('Tipo de clasificador incorrecto')
-
-    # Entrenar el clasificador si es necesario ...
-    # detector ...
-
-    # Cargar y procesar imgs de test 
-    # args.train_path ...
-
-    # Guardar los resultados en ficheros de texto (en el directorio donde se 
-    # ejecuta el main.py) tal y como se pide en el enunciado.
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser(
+#         description='Entrena sober train y ejecuta el clasificador sobre imgs de test')
+#     parser.add_argument(
+#         '--train_path', type=str, default="./train", help='Path al directorio de imgs de train')
+#     parser.add_argument(
+#         '--test_path', type=str, default="./test", help='Path al directorio de imgs de test')
+#     parser.add_argument(
+#         '--classifier', type=str, default="BAYES", help='String con el nombre del clasificador')
+#
+#     args = parser.parse_args()
+#
+#     mserParams = (7, 200, 2000, 1)  # Añadir posibilidad de cambiar los parámetros de MSER
+#
+#     # winSize: Size of the image window.
+#     # blockSize: Size of the blocks. (2 x cellSize)
+#     # blockStride: Stride between blocks. (50% of blockSize)
+#     # cellSize: Size of the cells. (winSize must be divisible by cellSize)
+#     # nbins: Number of bins. (9 default)
+#     # signedGradients: Use signed gradients. (true default)
+#     hogParams = ((32, 32), (16, 16), (8, 8), (8, 8), 9, True)  # Añadir posibilidad de cambiar los parámetros de HOG
+#
+#     testLDA_HOG(trainPath, testPath, mserParams, hogParams)
+#
+#     # Cargar los datos de entrenamiento
+#     # args.train_path
+#
+#     # Tratamiento de los datos
+#
+#     # Crear el clasificador
+#     if args.classifier == "BAYES":
+#         # detector = ...
+#         None
+#     else:
+#         raise ValueError('Tipo de clasificador incorrecto')
+#
+#     # Entrenar el clasificador si es necesario ...
+#     # detector ...
+#
+#     # Cargar y procesar imgs de test
+#     # args.train_path ...
+#
+#     # Guardar los resultados en ficheros de texto (en el directorio donde se
+#     # ejecuta el main.py) tal y como se pide en el enunciado.
