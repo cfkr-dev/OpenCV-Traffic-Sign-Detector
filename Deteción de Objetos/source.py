@@ -608,7 +608,7 @@ def gammaCorrection(src, gamma):
 
     return cv2.LUT(src, table)
 
-# ----------------------- OTHER ALTERNATIVES  -----------------------
+# ----------------------- OTHER ALTERNATIVES FOR RECOGNITION -----------------------
 
 # Feature vector using Haar-like-features
 def featureVectorHLF(image):
