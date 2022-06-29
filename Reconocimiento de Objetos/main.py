@@ -12,21 +12,20 @@
 # -------------------------------------
 #                IMPORTS
 # -------------------------------------
-import pickle
-import random
-
-from sklearn.model_selection import train_test_split
 
 import constants
 import argparse
 import math
 import os
 import cv2
+import pickle
+import random
 import numpy as np
 from time import sleep
 from tqdm import tqdm  # Loop progress bar || Resource from: https://github.com/tqdm/tqdm
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.metrics import confusion_matrix, classification_report, ConfusionMatrixDisplay
+from sklearn.model_selection import train_test_split
 
 
 # -----------------------------------
@@ -34,23 +33,6 @@ from sklearn.metrics import confusion_matrix, classification_report, ConfusionMa
 # -----------------------------------
 
 # ----------------------- MSER FUNCTIONS -----------------------
-
-
-def detectSignsOnDirectory(path, mser):
-    directoryDetections = []
-    numberOfDetections = []
-    imagesWithWindows = []
-    for file in tqdm(os.listdir(path)):
-        if not file.endswith('.txt'):
-            detections = MSERTrafficSignDetector(cv2.imread(path + '/' + file), mser, file)
-            directoryDetections.append(detections)
-            numberOfDetections.append((file, len(detections)))
-            image = createImageWithWindows(cv2.imread(path + '/' + file), detections)
-            imagesWithWindows.append((file, image))
-
-    sleep(0.02)
-    return directoryDetections, numberOfDetections, imagesWithWindows
-
 
 def MSERTrafficSignDetector(image, mser, file):
     modifiedImage = grayAndEnhanceContrast(image)
@@ -296,21 +278,6 @@ def calculateHOGDescriptors(trainImages, hog):
     return imagesHOGDescriptors
 
 
-def sortImagesBySignType(images, trainImages):
-    imagesBySignType = dict((signType, []) for signType in range(1, 7))
-    for image in trainImages.keys():
-        for detection in images[image]:
-            imagesBySignType[detection[3]].append(detection)
-    return imagesBySignType
-
-
-def getAllDescriptors(detections):
-    descriptors = []
-    for detection in detections:
-        descriptors.append((detection[0], detection[3]))
-    return descriptors
-
-
 def getElementIndexFromList(l, element):
     # Consider "l" contains "element"
     index = 0
@@ -340,6 +307,22 @@ def randomBinaryArray(zerosNumber, noZerosNumber, signType):
     return arr
 
 
+def extractHOGDescriptorsAndRealSignTypes(detectionsHOGDescriptors):
+    descriptors = []
+    realSignTypes = []
+    for detection in detectionsHOGDescriptors:
+        descriptors.append(detection[0])
+        realSignTypes.append(detection[3])
+    return descriptors, realSignTypes
+
+
+def flatData(data):
+    dataFlat = []
+    for x in data:
+        dataFlat.extend(x)
+    return dataFlat
+
+
 # ----------------------- TRAIN DATA LOADING FUNCTIONS -----------------------
 
 def loadTrainRealResults(path):
@@ -355,22 +338,7 @@ def loadTrainRealResults(path):
     return realResults
 
 
-def calculateNegativeTrainResults(trainImages, positiveTrainResults, mser, loadHack):
-    if not loadHack:
-        # calculate all windows of all images with MSER detector from project 1
-        allImagesMSERDetections = dict((imageFileName, []) for imageFileName in trainImages.keys())
-        for fileName, image in tqdm(trainImages.items()):
-            MSERDetections = MSERTrafficSignDetector(image, mser, fileName)
-            allImagesMSERDetections[fileName] = MSERDetections
-        sleep(0.02)
-
-        with open("MSER.val", "wb") as outfile:
-            # "wb" argument opens the file in binary mode
-            pickle.dump(allImagesMSERDetections, outfile)
-    else:
-        with open("MSER.val", "rb") as infile:
-            allImagesMSERDetections = pickle.load(infile)
-    # use intersection over union to calculate negative results (IoU <= 0.5)
+def computeNegativeTrainResults(trainImages, positiveTrainResults, allImagesMSERDetections):
     negativeTrainResults = dict((imageFileName, []) for imageFileName in trainImages.keys())
     for fileName in tqdm(trainImages.keys()):
         for detectedImage in allImagesMSERDetections[fileName]:
@@ -381,6 +349,22 @@ def calculateNegativeTrainResults(trainImages, positiveTrainResults, mser, loadH
                     lastScore = intersectionOverUnionScore
             if lastScore <= 0.5:
                 negativeTrainResults[fileName].append(detectedImage)
+    return negativeTrainResults
+
+
+def calculateNegativeTrainResults(trainImages, positiveTrainResults, mser):
+    if not os.path.exists('MSER.val'):
+        allImagesMSERDetections = dict((imageFileName, []) for imageFileName in trainImages.keys())
+        for fileName, image in tqdm(trainImages.items()):
+            MSERDetections = MSERTrafficSignDetector(image, mser, fileName)
+            allImagesMSERDetections[fileName] = MSERDetections
+        sleep(0.02)
+        with open("MSER.val", "wb") as outfile:
+            pickle.dump(allImagesMSERDetections, outfile)
+    else:
+        with open("MSER.val", "rb") as infile:
+            allImagesMSERDetections = pickle.load(infile)
+    negativeTrainResults = computeNegativeTrainResults(trainImages, positiveTrainResults, allImagesMSERDetections)
     return negativeTrainResults
 
 
@@ -407,8 +391,7 @@ def formatTrainDataBySignType(positiveTrainResultsOrderByImageFile, negativeTrai
 def calculateTrainDataOrderBySignType(trainImages, trainResults, mser, loadingHack):
     positiveTrainResultsOrderByImageFile = orderCroppedImagesByImageFile(trainImages, trainResults)
     negativeTrainResultsOrderByImageFile = calculateNegativeTrainResults(trainImages,
-                                                                         positiveTrainResultsOrderByImageFile, mser,
-                                                                         loadingHack)
+                                                                         positiveTrainResultsOrderByImageFile, mser)
     trainDataOrderBySignType = formatTrainDataBySignType(positiveTrainResultsOrderByImageFile,
                                                          negativeTrainResultsOrderByImageFile)
     return trainDataOrderBySignType
@@ -444,36 +427,60 @@ def createLDAClassifiers():
     return LDAClassifierProhibicionType, LDAClassifierPeligroType, LDAClassifierStopType, LDAClassifierDirProhibidaType, LDAClassifierCedaPasoType, LDAClassifierDirObligatoriaType
 
 
-def mixTrainData(trainDataHOGDescriptors, randomTagsBySignType):
+def mixTrainData(negativeDataHOGDescriptors, trainDataHOGDescriptorByType, randomTagsBySignType):
     data = []
     for tag in randomTagsBySignType:
-        sample = trainDataHOGDescriptors[tag][:].pop()
+        if tag == 0:
+            sample = negativeDataHOGDescriptors.pop()
+        else:
+            sample = trainDataHOGDescriptorByType.pop()
         data.append(sample[0])
     return data
 
 
 def fitLDAClassifiers(LDAClassifiers, trainDataHOGDescriptors):
     transformedDataBySignType = dict((signType, []) for signType in range(0, 6))
+    negativeDataHOGDescriptors = trainDataHOGDescriptors[0]
     for signType in range(1, 7):
         randomTagsBySignType = randomBinaryArray(
             len(trainDataHOGDescriptors[0]) + len(trainDataHOGDescriptors[signType]),
             len(trainDataHOGDescriptors[signType]), signType)
-        mixedTrainDataHOGDescriptors = mixTrainData(trainDataHOGDescriptors, randomTagsBySignType)
+        mixedTrainDataHOGDescriptors = mixTrainData(negativeDataHOGDescriptors[:], trainDataHOGDescriptors[signType][:],
+                                                    randomTagsBySignType)
         transformedDataBySignType[signType - 1] = LDAClassifiers[signType - 1].fit_transform(
             mixedTrainDataHOGDescriptors, randomTagsBySignType)
     return transformedDataBySignType
 
 
-def predictProbabilityLDAClassifiers(LDAClassifiers, detectionHOGDescriptor, tolerance):
-    probabilities = []
-    for signType in range(1, 7):
-        probabilities.append((LDAClassifiers[signType - 1].predict_proba(detectionHOGDescriptor)[0], signType))
-    probabilities.sort(key=lambda x: x[0], reverse=True)
-    return probabilities[0][1] if probabilities[0][0] >= tolerance else 0
+def extractBestPredictions(probabilities, tolerance, numInstances):
+    bestPredictions = []
+    for prediction in range(numInstances):
+        bestInstancePredictions = []
+        for classifier in range(0, 6):
+            noSignProb = probabilities[classifier][prediction][0]
+            signProb = probabilities[classifier][prediction][1]
+            bestInstancePredictions.append((max(noSignProb, signProb), 0 if noSignProb > signProb else classifier + 1))
+        if all(x == (1.0, 0) for x in bestInstancePredictions) or all(x is x[0] < tolerance for x in bestInstancePredictions):
+            bestPredictions.append(0)
+        else:
+            bestPred = max(bestInstancePredictions, key=lambda x: x[0] if x[1] != 0 else -math.inf)
+            bestPredictions.append(bestPred[1])
+    return bestPredictions
+
+
+def predictProbabilityLDAClassifiers(LDAClassifiers, detectionsHOGDescriptors, tolerance):
+    probabilities = dict((signType, None) for signType in range(0, 6))
+
+    onlyHOGDescriptors, onlyRealSignTypes = extractHOGDescriptorsAndRealSignTypes(detectionsHOGDescriptors)
+
+    for signType in range(0, 6):
+        probabilities[signType] = (LDAClassifiers[signType].predict_proba(onlyHOGDescriptors))
+
+    predictedSignTypes = extractBestPredictions(probabilities, tolerance, len(onlyRealSignTypes))
+    return predictedSignTypes, onlyRealSignTypes
 
 
 # ----------------------- TEST LDA + HOG -----------------------
-
 
 def testLDA_HOG(trainPath, testPath, mserParams, hogParams):
     constants.TRAIN_PATH = trainPath
@@ -493,26 +500,19 @@ def testLDA_HOG(trainPath, testPath, mserParams, hogParams):
 
     LDAClassifiers = createLDAClassifiers()
 
-    LDAFittedClassifiers = fitLDAClassifiers(LDAClassifiers, trainDataHOGDescriptorsOrderBySignType)
+    LDATransformedTrainDataOrderBySignType = fitLDAClassifiers(LDAClassifiers, trainDataHOGDescriptorsOrderBySignType)
 
-    # testDataHOGDescriptors = list(positiveTestResultsHOGDescriptors.values()) + list(
-    #     negativeTestResultsHOGDescriptors.values())
-    # random.shuffle(testDataHOGDescriptors)
-    #
-    # trueSignTypes = []
-    # predictedSignTypes = []
-    #
-    # for detectionHOGDescriptor in testDataHOGDescriptors:
-    #     signType = predictProbabilityLDAClassifiers(LDAFittedClassifiers, detectionHOGDescriptor, 0.5)
-    #     trueSignTypes.append(detectionHOGDescriptor[3])
-    #     predictedSignTypes.append(signType)
-    #
-    # LDA_HOG_ConfusionMatrix = confusion_matrix(trueSignTypes, predictedSignTypes)
-    # ConfusionMatrixDisplay(confusion_matrix=LDA_HOG_ConfusionMatrix, display_labels=constants.SIGN_NAMES)
-    #
-    # LDA_HOG_ClassificationReport = classification_report(trueSignTypes, predictedSignTypes,
-    #                                                      target_names=constants.SIGN_NAMES)
-    # print(LDA_HOG_ClassificationReport)
+    testDataHOGDescriptors = flatData(list(testDataHOGDescriptorsOrderBySignType.values()))
+    random.shuffle(testDataHOGDescriptors)
+
+    predictedSignTypes, trueSignTypes = predictProbabilityLDAClassifiers(LDAClassifiers, testDataHOGDescriptors, 0.5)
+
+    LDA_HOG_ConfusionMatrix = confusion_matrix(trueSignTypes, predictedSignTypes)
+    ConfusionMatrixDisplay(confusion_matrix=LDA_HOG_ConfusionMatrix, display_labels=constants.SIGN_NAMES)
+
+    LDA_HOG_ClassificationReport = classification_report(trueSignTypes, predictedSignTypes,
+                                                         target_names=constants.SIGN_NAMES)
+    print(LDA_HOG_ClassificationReport)
 
 
 # --------------------------------------
