@@ -12,6 +12,7 @@
 # -------------------------------------
 #                IMPORTS
 # -------------------------------------
+from matplotlib import pyplot as plt
 
 import constants
 import argparse
@@ -272,9 +273,10 @@ def intersectionOverUnion(imageACoords, imageBCoords):
 
 def calculateHOGDescriptors(trainImages, hog):
     imagesHOGDescriptors = dict((signType, []) for signType in range(0, 7))
-    for signType in trainImages.keys():
+    for signType in tqdm(trainImages.keys()):
         for detection in trainImages[signType]:
             imagesHOGDescriptors[signType].append((hog.compute(detection[0]), detection[1], detection[2], detection[3]))
+    sleep(0.02)
     return imagesHOGDescriptors
 
 
@@ -318,8 +320,9 @@ def extractHOGDescriptorsAndRealSignTypes(detectionsHOGDescriptors):
 
 def flatData(data):
     dataFlat = []
-    for x in data:
+    for x in tqdm(data):
         dataFlat.extend(x)
+    sleep(0.02)
     return dataFlat
 
 
@@ -349,21 +352,24 @@ def computeNegativeTrainResults(trainImages, positiveTrainResults, allImagesMSER
                     lastScore = intersectionOverUnionScore
             if lastScore <= 0.5:
                 negativeTrainResults[fileName].append(detectedImage)
+    sleep(0.02)
     return negativeTrainResults
 
 
 def calculateNegativeTrainResults(trainImages, positiveTrainResults, mser):
-    if not os.path.exists('MSER.val'):
+    if not os.path.exists('MSERTrain.val'):
         allImagesMSERDetections = dict((imageFileName, []) for imageFileName in trainImages.keys())
+        print("\nExtrayendo detecciones mediante MSER...")
         for fileName, image in tqdm(trainImages.items()):
             MSERDetections = MSERTrafficSignDetector(image, mser, fileName)
             allImagesMSERDetections[fileName] = MSERDetections
         sleep(0.02)
-        with open("MSER.val", "wb") as outfile:
+        with open("MSERTrain.val", "wb") as outfile:
             pickle.dump(allImagesMSERDetections, outfile)
     else:
-        with open("MSER.val", "rb") as infile:
+        with open("MSERTrain.val", "rb") as infile:
             allImagesMSERDetections = pickle.load(infile)
+    print("\nCalculando conjunto de detecciones correspondientes a no señal...")
     negativeTrainResults = computeNegativeTrainResults(trainImages, positiveTrainResults, allImagesMSERDetections)
     return negativeTrainResults
 
@@ -379,29 +385,63 @@ def extractDataOrderBySignType(trainResultsOrderByImageFile, signType):
 
 def formatTrainDataBySignType(positiveTrainResultsOrderByImageFile, negativeTrainResultsOrderByImageFile):
     trainDataBySignType = dict((signType, []) for signType in range(0, 7))
-    for signType in range(0, 7):
+    for signType in tqdm(range(0, 7)):
         if signType == 0:
             trainDataBySignType[signType] = extractDataOrderBySignType(negativeTrainResultsOrderByImageFile, signType)
         else:
             trainDataBySignType[signType] = extractDataOrderBySignType(positiveTrainResultsOrderByImageFile, signType)
         random.shuffle(trainDataBySignType[signType])
+    sleep(0.02)
     return trainDataBySignType
 
 
-def calculateTrainDataOrderBySignType(trainImages, trainResults, mser, loadingHack):
+def calculateTrainDataOrderBySignType(trainImages, trainResults, mser):
+    print("\nExtrayendo resultados positivos desde los datos de entrenamiento...")
     positiveTrainResultsOrderByImageFile = orderCroppedImagesByImageFile(trainImages, trainResults)
+    print("\nExtrayendo resultados negativos (mediante detecciones con MSER) desde los datos de entrenamiento...")
     negativeTrainResultsOrderByImageFile = calculateNegativeTrainResults(trainImages,
                                                                          positiveTrainResultsOrderByImageFile, mser)
+    print("\nAplicando formato...")
     trainDataOrderBySignType = formatTrainDataBySignType(positiveTrainResultsOrderByImageFile,
                                                          negativeTrainResultsOrderByImageFile)
     return trainDataOrderBySignType
 
 
 def loadTrainData(mser):
-    trainImages = loadImages(constants.TRAIN_PATH)
-    trainResults = loadTrainRealResults(constants.TRAIN_PATH_REAL_RESULTS)
-    trainDataOrderBySignType = calculateTrainDataOrderBySignType(trainImages, trainResults, mser, True)
-    return trainDataOrderBySignType, trainImages
+    try:
+        print("\nCargando imágenes de entrenamiento...\n(" + constants.TRAIN_PATH + ")\n")
+        trainImages = loadImages(constants.TRAIN_PATH)
+    except Exception as e:
+        print("Ha ocurrido un error cargando las imágenes de entrenamiento :(")
+        print("\n"
+              "------------------------------------------------------------\n"
+              "                        TEST FALLIDO                        \n"
+              "------------------------------------------------------------\n")
+        print(e)
+    else:
+        try:
+            print("\nCargando resultados reales de entrenamiento...\n(" + constants.TRAIN_PATH_REAL_RESULTS + ")\n")
+            trainResults = loadTrainRealResults(constants.TRAIN_PATH_REAL_RESULTS)
+        except Exception as e:
+            print("Ha ocurrido un error cargando los resultados reales de entrenamiento :(")
+            print("\n"
+                  "------------------------------------------------------------\n"
+                  "                        TEST FALLIDO                        \n"
+                  "------------------------------------------------------------\n")
+            print(e)
+        else:
+            try:
+                print("\nExtrayendo resultados positivos y negativos (mediante detecciones con MSER) desde los datos de entrenamiento...")
+                trainDataOrderBySignType = calculateTrainDataOrderBySignType(trainImages, trainResults, mser)
+            except Exception as e:
+                print("Ha ocurrido un error extrayendo los resultados positivos y negativos desde los datos de entrenamiento :(")
+                print("\n"
+                      "------------------------------------------------------------\n"
+                      "                        TEST FALLIDO                        \n"
+                      "------------------------------------------------------------\n")
+                print(e)
+            else:
+                return trainDataOrderBySignType, trainImages
 
 
 # ----------------------- TEST DATA LOADING FUNCTIONS -----------------------
@@ -409,9 +449,10 @@ def loadTrainData(mser):
 def extractTestResults(trainResults, percentage):
     trainDetectionsOrderBySignType = dict((signType, []) for signType in range(0, 7))
     testDetectionsOrderBySignType = dict((signType, []) for signType in range(0, 7))
-    for signType in range(0, 7):
+    for signType in tqdm(range(0, 7)):
         trainDetectionsOrderBySignType[signType], testDetectionsOrderBySignType[signType] = train_test_split(
             trainResults[signType], shuffle=False, test_size=percentage)
+    sleep(0.02)
     return trainDetectionsOrderBySignType, testDetectionsOrderBySignType
 
 
@@ -441,7 +482,7 @@ def mixTrainData(negativeDataHOGDescriptors, trainDataHOGDescriptorByType, rando
 def fitLDAClassifiers(LDAClassifiers, trainDataHOGDescriptors):
     transformedDataBySignType = dict((signType, []) for signType in range(0, 6))
     negativeDataHOGDescriptors = trainDataHOGDescriptors[0]
-    for signType in range(1, 7):
+    for signType in tqdm(range(1, 7)):
         randomTagsBySignType = randomBinaryArray(
             len(trainDataHOGDescriptors[0]) + len(trainDataHOGDescriptors[signType]),
             len(trainDataHOGDescriptors[signType]), signType)
@@ -449,12 +490,13 @@ def fitLDAClassifiers(LDAClassifiers, trainDataHOGDescriptors):
                                                     randomTagsBySignType)
         transformedDataBySignType[signType - 1] = LDAClassifiers[signType - 1].fit_transform(
             mixedTrainDataHOGDescriptors, randomTagsBySignType)
+    sleep(0.02)
     return transformedDataBySignType
 
 
 def extractBestPredictions(probabilities, tolerance, numInstances):
     bestPredictions = []
-    for prediction in range(numInstances):
+    for prediction in tqdm(range(numInstances)):
         bestInstancePredictions = []
         for classifier in range(0, 6):
             noSignProb = probabilities[classifier][prediction][0]
@@ -465,6 +507,7 @@ def extractBestPredictions(probabilities, tolerance, numInstances):
         else:
             bestPred = max(bestInstancePredictions, key=lambda x: x[0] if x[1] != 0 else -math.inf)
             bestPredictions.append(bestPred[1])
+    sleep(0.02)
     return bestPredictions
 
 
@@ -473,46 +516,172 @@ def predictProbabilityLDAClassifiers(LDAClassifiers, detectionsHOGDescriptors, t
 
     onlyHOGDescriptors, onlyRealSignTypes = extractHOGDescriptorsAndRealSignTypes(detectionsHOGDescriptors)
 
-    for signType in range(0, 6):
+    print("\nCalculando probabilidades...")
+    for signType in tqdm(range(0, 6)):
         probabilities[signType] = (LDAClassifiers[signType].predict_proba(onlyHOGDescriptors))
+    sleep(0.02)
 
+    print("\nCalculando mejor predicción...")
     predictedSignTypes = extractBestPredictions(probabilities, tolerance, len(onlyRealSignTypes))
     return predictedSignTypes, onlyRealSignTypes
 
 
 # ----------------------- TEST LDA + HOG -----------------------
 
-def testLDA_HOG(trainPath, testPath, mserParams, hogParams):
+def testLDA_HOG(trainPath, testPath, mserParams, hogParams, validationPercentage, toleranceNoSignal):
     constants.TRAIN_PATH = trainPath
     constants.TEST_PATH = testPath
     constants.TRAIN_PATH_REAL_RESULTS = trainPath + "/gt.txt"
     constants.TEST_PATH_REAL_RESULTS = testPath + "/gt.txt"
 
-    mser = initializeMSER(mserParams)
-    hog = initializeHOG(hogParams)
+    print("\nVa a comenzar el test de detección de señales de tráfico mediante LDA|HOG|BAYES...")
+    print("\nInicializando detector MSER...")
+    try:
+        mser = initializeMSER(mserParams)
+    except Exception as e:
+        print("Ha ocurrido un error generando el detector :(")
+        print("\n"
+              "------------------------------------------------------------\n"
+              "                        TEST FALLIDO                        \n"
+              "------------------------------------------------------------\n")
+        print(e)
+    else:
+        print("Se ha creado con éxito el detector MSER con parámetros:\n")
+        print("   DELTA:", mserParams[0])
+        print("   MIN AREA:", mserParams[1])
+        print("   MAX AREA:", mserParams[2])
+        print("   MAX VARIATION:", mserParams[3])
 
-    trainDataOrderBySignType, trainImages = loadTrainData(mser)
+        print("\nInicializando detector de características HOG...")
+        try:
+            hog = initializeHOG(hogParams)
+        except Exception as e:
+            print("Ha ocurrido un error generando el detector :(")
+            print("\n"
+                  "------------------------------------------------------------\n"
+                  "                        TEST FALLIDO                        \n"
+                  "------------------------------------------------------------\n")
+            print(e)
+        else:
+            print("Se ha creado con éxito el detector HOG con parámetros:\n")
+            print("   WINDOW SIZE:", hogParams[0])
+            print("   BLOCK SIZE:", hogParams[1])
+            print("   BLOCK STRIDE:", hogParams[2])
+            print("   CELL SIZE:", hogParams[3])
+            print("   N BINS:", hogParams[4])
+            print("   SIGNED GRADIENT:", hogParams[5])
 
-    trainDataOrderBySignType, testDataOrderBySignType = extractTestResults(trainDataOrderBySignType, 0.1)
-
-    trainDataHOGDescriptorsOrderBySignType = calculateHOGDescriptors(trainDataOrderBySignType, hog)
-    testDataHOGDescriptorsOrderBySignType = calculateHOGDescriptors(testDataOrderBySignType, hog)
-
-    LDAClassifiers = createLDAClassifiers()
-
-    LDATransformedTrainDataOrderBySignType = fitLDAClassifiers(LDAClassifiers, trainDataHOGDescriptorsOrderBySignType)
-
-    testDataHOGDescriptors = flatData(list(testDataHOGDescriptorsOrderBySignType.values()))
-    random.shuffle(testDataHOGDescriptors)
-
-    predictedSignTypes, trueSignTypes = predictProbabilityLDAClassifiers(LDAClassifiers, testDataHOGDescriptors, 0.5)
-
-    LDA_HOG_ConfusionMatrix = confusion_matrix(trueSignTypes, predictedSignTypes)
-    ConfusionMatrixDisplay(confusion_matrix=LDA_HOG_ConfusionMatrix, display_labels=constants.SIGN_NAMES)
-
-    LDA_HOG_ClassificationReport = classification_report(trueSignTypes, predictedSignTypes,
-                                                         target_names=constants.SIGN_NAMES)
-    print(LDA_HOG_ClassificationReport)
+            print("\nIniciando carga de datos de entrenamiento...")
+            try:
+                trainDataOrderBySignType, trainImages = loadTrainData(mser)
+            except Exception as e:
+                print("Ha ocurrido un error cargando los datos de entrenamiento :(")
+                print("\n"
+                      "------------------------------------------------------------\n"
+                      "                        TEST FALLIDO                        \n"
+                      "------------------------------------------------------------\n")
+                print(e)
+            else:
+                try:
+                    print("\nIniciando extracción de datos para validación a partir de datos de prueba (se "
+                          "seleccionará un "+str(validationPercentage)+"% de los datos de entrenamiento para "
+                                                                       "validar)...")
+                    trainDataOrderBySignType, testDataOrderBySignType = extractTestResults(trainDataOrderBySignType, validationPercentage)
+                except Exception as e:
+                    print("Ha ocurrido un error extrayendo los datos de validación :(")
+                    print("\n"
+                          "------------------------------------------------------------\n"
+                          "                        TEST FALLIDO                        \n"
+                          "------------------------------------------------------------\n")
+                    print(e)
+                else:
+                    try:
+                        print("\nExtrayendo vectores de características HOG de los datos de prueba...")
+                        trainDataHOGDescriptorsOrderBySignType = calculateHOGDescriptors(trainDataOrderBySignType, hog)
+                        print("\nExtrayendo vectores de características HOG de los datos de validación...")
+                        testDataHOGDescriptorsOrderBySignType = calculateHOGDescriptors(testDataOrderBySignType, hog)
+                    except Exception as e:
+                        print("Ha ocurrido un error extrayendo los vectores de características HOG :(")
+                        print("\n"
+                              "------------------------------------------------------------\n"
+                              "                        TEST FALLIDO                        \n"
+                              "------------------------------------------------------------\n")
+                        print(e)
+                    else:
+                        try:
+                            print("\nCreación de los clasificadores LDA...")
+                            print("\nSe creará un clasificador binario (señal vs no señal) por cada tipo de señal de "
+                                  "tráfico...")
+                            LDAClassifiers = createLDAClassifiers()
+                        except Exception as e:
+                            print("Ha ocurrido un error creando los clasificadores LDA :(")
+                            print("\n"
+                                  "------------------------------------------------------------\n"
+                                  "                        TEST FALLIDO                        \n"
+                                  "------------------------------------------------------------\n")
+                            print(e)
+                        else:
+                            try:
+                                print("\nEntrenando los clasificadores LDA mediante los vectores de características "
+                                      "HOG de cada tipo de señal de tráfico...")
+                                fitLDAClassifiers(LDAClassifiers, trainDataHOGDescriptorsOrderBySignType)
+                            except Exception as e:
+                                print("Ha ocurrido un error entrenando los clasificadores LDA :(")
+                                print("\n"
+                                      "------------------------------------------------------------\n"
+                                      "                        TEST FALLIDO                        \n"
+                                      "------------------------------------------------------------\n")
+                                print(e)
+                            else:
+                                try:
+                                    print("\nRealizando predicciones mediante los datos de validación... (tolerancia "
+                                          "para asumir no señal < "+str(toleranceNoSignal)+")")
+                                    print("\nAplicando formato a datos de validación...")
+                                    testDataHOGDescriptors = flatData(list(testDataHOGDescriptorsOrderBySignType.values()))
+                                    random.shuffle(testDataHOGDescriptors)
+                                    predictedSignTypes, trueSignTypes = predictProbabilityLDAClassifiers(LDAClassifiers, testDataHOGDescriptors, 0.5)
+                                except Exception as e:
+                                    print("Ha ocurrido un error realizando las predicciones :(")
+                                    print("\n"
+                                          "------------------------------------------------------------\n"
+                                          "                        TEST FALLIDO                        \n"
+                                          "------------------------------------------------------------\n")
+                                    print(e)
+                                else:
+                                    print("\nEl proceso de predicción de tipo de señal de tráfico ha finalizado con "
+                                          "éxito, a continuación se mostrarán los resultados...")
+                                    try:
+                                        print("\nMostrando matriz de confusión...")
+                                        LDA_HOG_ConfusionMatrix = confusion_matrix(trueSignTypes, predictedSignTypes)
+                                        matrixDisplay = ConfusionMatrixDisplay(confusion_matrix=LDA_HOG_ConfusionMatrix, display_labels=constants.SIGN_NAMES)
+                                        matrixDisplay.plot(cmap='Blues', xticks_rotation=45)
+                                        plt.tight_layout()
+                                        plt.show()
+                                    except Exception as e:
+                                        print("Ha ocurrido un error mostrando la matriz de confusión :(")
+                                        print("\n"
+                                              "------------------------------------------------------------\n"
+                                              "                        TEST FALLIDO                        \n"
+                                              "------------------------------------------------------------\n")
+                                        print(e)
+                                    else:
+                                        try:
+                                            print("\nMostrando reporte de resultados...")
+                                            LDA_HOG_ClassificationReport = classification_report(trueSignTypes, predictedSignTypes,
+                                                                                                 target_names=constants.SIGN_NAMES)
+                                            print(LDA_HOG_ClassificationReport)
+                                        except Exception as e:
+                                            print("Ha ocurrido un error mostrando el reporte de resultados :(")
+                                            print("\n"
+                                                  "------------------------------------------------------------\n"
+                                                  "                        TEST FALLIDO                        \n"
+                                                  "------------------------------------------------------------\n")
+                                            print(e)
+                                        else:
+                                            print("\n"
+                                                  "------------------------------------------------------------\n"
+                                                  "                  TEST TERMINADO CON ÉXITO                  \n"
+                                                  "------------------------------------------------------------\n")
 
 
 # --------------------------------------
@@ -523,7 +692,7 @@ trainPath = 'train_jpg'
 testPath = 'test_alumnos_jpg'
 mserParams = (7, 200, 2000, 1)
 hogParams = ((32, 32), (16, 16), (8, 8), (8, 8), 9, True)
-testLDA_HOG(trainPath, testPath, mserParams, hogParams)
+testLDA_HOG(trainPath, testPath, mserParams, hogParams, 0.1, 0.5)
 
 # if __name__ == "__main__":
 #     parser = argparse.ArgumentParser(
