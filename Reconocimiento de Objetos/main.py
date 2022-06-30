@@ -21,7 +21,10 @@ import cv2
 import numpy as np
 from time import sleep
 from tqdm import tqdm  # Loop progress bar || Resource from: https://github.com/tqdm/tqdm
-
+from skimage.transform import integral_image
+from skimage.feature import haar_like_feature
+from sklearn.decomposition import PCA
+from sklearn.neighbors import KNeighborsClassifier
 
 # -----------------------------------
 #              FUNCTIONS
@@ -600,6 +603,20 @@ def gammaCorrection(src, gamma):
 
     return cv2.LUT(src, table)
 
+# ----------------------- OTHER ALTERNATIVES FOR RECOGNITION -----------------------
+
+# Feature vector using Haar-like-features
+def featureVectorHLF(image):
+    integralImage = integral_image(image)
+    return haar_like_feature(integralImage, 0, 0, integralImage.shape[0], integralImage.shape[1],featureType='type-4',featureCoord=None)
+
+# Dimensionality reduction algorithms whit PCA
+def pca(n_components):
+    return PCA(n_components, svd_solver='full')
+
+# KNN classifier
+def knnClassifier ():
+    return KNeighborsClassifier(n_neighbors=4)
 
 # ----------------------- TEST -----------------------
 
