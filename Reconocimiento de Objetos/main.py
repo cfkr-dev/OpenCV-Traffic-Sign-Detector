@@ -53,15 +53,16 @@ if __name__ == "__main__":
 
     if checkParams(mserParams, classifierParams):
         mserValues = int(mserParams[1]), int(mserParams[2]), int(mserParams[3]), float(mserParams[4])
-        print("\nDesea realizar validación sobre el conjunto de datos de entrenamiento...")
+        print("\nDesea realizar validación sobre el conjunto de datos de entrenamiento antes de realizar el test principal?...")
         print("SI - s")
         print("NO - n")
         answer = input()
         if answer == "s":
             source.testValidation(args.train_path.replace('\\', '/'), mserValues, classifierParams, 0.1, 0.5)
         elif answer == "n" or answer == "s":
-            print("\nNo se ha reconocido una respuesta correcta. Se ejecutará sin validación.")
-        # source.test(args.train_path.replace('\\', '/'), mserValues, classifierParams, 0.1, 0.5)
+            print("\nNo se ha reconocido una respuesta correcta. Se ejecutará el test principal sin validación.")
+        source.mainTest(args.test_path.replace('\\', '/'), args.train_path.replace('\\', '/'), mserValues, classifierParams,
+                        0.5)
     else:
         print("\nNo se ha especificado el nombre de un detector y/o clasificador existentes")
         print("        Especificaciones sobre\n"
@@ -91,13 +92,3 @@ if __name__ == "__main__":
             "                          (Hay que usar uno y solo un tipo de algoritmo para especificar\n"
             "                           un clasificador y en el orden anteriormente indicado)\n\n"
             "         Ejemplo de uso: HOG_LDA_KNN")
-
-
-# trainPath = 'train_jpg'
-# testPath = 'test_alumnos_jpg'
-# mserParams = (7, 200, 2000, 1)
-# classifierParams = ('HOG', 'LDA', 'LDABAYES'), ('GRAY', 'LDA', 'LDABAYES'), ('HOG', 'LDA', 'KNN'), ('GRAY', 'LDA', 'KNN')
-# for cp in classifierParams:
-#     source.testValidation(trainPath, mserParams, cp, 0.1, 0.5)
-
-# source.testValidation(trainPath, mserParams, ('GRAY', 'LDA', 'KNN'), 0.1, 0.5)

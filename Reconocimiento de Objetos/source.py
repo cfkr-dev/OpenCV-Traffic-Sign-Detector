@@ -18,6 +18,7 @@ import math
 import os
 import pickle
 import random
+import shutil
 from time import sleep
 
 import cv2
@@ -42,6 +43,33 @@ def initializeMSER(mserParams):
     delta, minArea, maxArea, maxVariation = mserParams
     mser = cv2.MSER_create(delta=delta, min_area=minArea, max_area=maxArea, max_variation=maxVariation)
     return mser
+
+
+def detectSignsOnDirectory(testImages, mser):
+    numberOfDetections = []
+    imagesWithWindows = []
+    if not os.path.exists('MSERTest.val'):
+        allImagesMSERDetections = []
+        print("\nExtrayendo detecciones mediante MSER...")
+        for fileName, image in tqdm(testImages.items()):
+            MSERDetections = MSERTrafficSignDetector(image, mser, fileName)
+            for detection in MSERDetections:
+                allImagesMSERDetections.append((cv2.cvtColor(detection[0], cv2.COLOR_BGR2GRAY), detection[1], detection[2], detection[3]))
+            numberOfDetections.append((fileName, len(MSERDetections)))
+            image = createImageWithWindows(testImages[fileName], MSERDetections)
+            imagesWithWindows.append((fileName, image))
+        sleep(0.02)
+        with open("MSERTest.val", "wb") as outfile:
+            pickle.dump((allImagesMSERDetections, numberOfDetections), outfile)
+    else:
+        with open("MSERTest.val", "rb") as infile:
+            allImagesMSERDetections, numberOfDetections = pickle.load(infile)
+        for fileName, image in tqdm(testImages.items()):
+            for MSERDetections in allImagesMSERDetections:
+                image = createImageWithWindows(testImages[fileName], MSERDetections)
+                imagesWithWindows.append((fileName, image))
+        sleep(0.02)
+    return allImagesMSERDetections, numberOfDetections, imagesWithWindows
 
 
 def MSERTrafficSignDetector(image, mser, file):
@@ -304,13 +332,21 @@ def randomMultiArray(data):
     return arr
 
 
-def extractDescriptorsAndRealSignTypes(detectionsDescriptors):
-    descriptors = []
-    realSignTypes = []
-    for detection in detectionsDescriptors:
-        descriptors.append(detection[0])
-        realSignTypes.append(detection[3])
-    return descriptors, realSignTypes
+def extractDescriptorsAndRealSignTypes(detectionsDescriptors, testMode):
+    if not testMode:
+        descriptors = []
+        realSignTypes = []
+        for detection in detectionsDescriptors:
+            descriptors.append(detection[0])
+            realSignTypes.append(detection[3])
+        return descriptors, realSignTypes
+    else:
+        descriptors = []
+        realSignTypes = []
+        for detection in detectionsDescriptors:
+            descriptors.append((detection[0],detection[1],detection[2]))
+            realSignTypes.append(detection[3])
+        return descriptors, realSignTypes
 
 
 def flatData(data):
@@ -504,14 +540,24 @@ def initializeFeatureDescriptor(featureDescriptor):
     return featureDescriptorInitializations[featureDescriptor], featureDescriptor
 
 
-def calculateDescriptors(trainImages, featureDescriptor):
-    imagesFeatureDescriptors = dict((signType, []) for signType in range(0, 7))
-    for signType in tqdm(trainImages.keys()):
-        for detection in trainImages[signType]:
-            imagesFeatureDescriptors[signType].append(
-                (computeDescriptors(detection[0], featureDescriptor), detection[1], detection[2], detection[3]))
-    sleep(0.02)
-    return imagesFeatureDescriptors
+def calculateDescriptors(trainImages, featureDescriptor, testMode):
+    if not testMode:
+        imagesFeatureDescriptors = dict((signType, []) for signType in range(0, 7))
+        for signType in tqdm(trainImages.keys()):
+            for detection in trainImages[signType]:
+                imagesFeatureDescriptors[signType].append(
+                    (computeDescriptors(detection[0], featureDescriptor), detection[1], detection[2], detection[3]))
+        sleep(0.02)
+        return imagesFeatureDescriptors
+    else:
+        detectionsFeatureDescriptors = []
+        for imageDetections in tqdm(trainImages):
+            for detection in imageDetections:
+                detectionsFeatureDescriptors.append((computeDescriptors(detection[0], featureDescriptor), detection[1], detection[2], detection[3]))
+        sleep(0.02)
+        return detectionsFeatureDescriptors
+
+
 
 
 def computeDescriptors(image, featureDescriptor):
@@ -565,11 +611,11 @@ def fitLDAClassifiers(LDAClassifiers, trainDataDescriptors):
 def predictProbabilityLDAClassifiers(LDAClassifiers, detectionsDescriptors, tolerance):
     probabilities = dict((signType, None) for signType in range(0, 6))
 
-    onlyDescriptors, onlyRealSignTypes = extractDescriptorsAndRealSignTypes(detectionsDescriptors)
+    onlyDescriptors, onlyRealSignTypes = extractDescriptorsAndRealSignTypes(detectionsDescriptors, True)
 
     print("\nCalculando probabilidades...")
     for signType in tqdm(range(0, 6)):
-        probabilities[signType] = (LDAClassifiers[signType].predict_proba(onlyDescriptors))
+        probabilities[signType] = (LDAClassifiers[signType].predict_proba(onlyDescriptors[]))
     sleep(0.02)
 
     print("\nCalculando mejor predicción...")
@@ -807,3 +853,304 @@ def testValidation(trainPath, mserParams, classifierParams, validationPercentage
                                                   "------------------------------------------------------------\n"
                                                   "                  TEST TERMINADO CON ÉXITO                  \n"
                                                   "------------------------------------------------------------\n")
+
+
+# ----------------------- MAIN TEST -----------------------
+
+def mainTest(testPath, trainPath, mserParams, classifierParams, toleranceNoSignal):
+    constants.TRAIN_PATH = trainPath
+    constants.TRAIN_PATH_REAL_RESULTS = trainPath + "/gt.txt"
+    constants.TEST_PATH = testPath
+    constants.TEST_PATH_REAL_RESULTS = testPath + "/gt.txt"
+
+    print("\nVa a comenzar el test de detección de señales de tráfico mediante " + str(
+        classifierParams[0]) + "-" + str(classifierParams[1]) + "-" + str(classifierParams[2]) + "...")
+    print("\nEn primer lugar se procederá a entrenar los detectores con las imágenes de entrenamiento...")
+    print("\nInicializando detector MSER...")
+    try:
+        mser = initializeMSER(mserParams)
+    except Exception as e:
+        print("Ha ocurrido un error generando el detector :(")
+        print("\n"
+              "------------------------------------------------------------\n"
+              "                        TEST FALLIDO                        \n"
+              "------------------------------------------------------------\n")
+        print(e)
+    else:
+        print("Se ha creado con éxito el detector MSER con parámetros:\n")
+        print("   DELTA:", mserParams[0])
+        print("   MIN AREA:", mserParams[1])
+        print("   MAX AREA:", mserParams[2])
+        print("   MAX VARIATION:", mserParams[3])
+
+        print("\nInicializando descriptor de características " + str(classifierParams[0]) + "...")
+        try:
+            initializedDescriptor = initializeFeatureDescriptor(classifierParams[0])
+        except Exception as e:
+            print("Ha ocurrido un error generando el descriptor :(")
+            print("\n"
+                  "------------------------------------------------------------\n"
+                  "                        TEST FALLIDO                        \n"
+                  "------------------------------------------------------------\n")
+            print(e)
+        else:
+            print("Se ha creado con éxito el descriptor " + str(classifierParams[0]) + " con parámetros:\n" if
+                  classifierParams[0] == 'HOG' else "Se ha creado con éxito el descriptor " + str(classifierParams[0]))
+            if classifierParams[0] == 'HOG':
+                for value, name in zip(constants.HOG_FEATURE_DESCRIPTORS_PARAMS[0],
+                                       constants.HOG_FEATURE_DESCRIPTORS_PARAMS[1]):
+                    print("   " + str(name) + ":", value)
+
+            print("\nIniciando carga de datos de entrenamiento...")
+            try:
+                trainDataOrderBySignType, trainImages = loadTrainData(mser)
+            except Exception as e:
+                print("Ha ocurrido un error cargando los datos de entrenamiento :(")
+                print("\n"
+                      "------------------------------------------------------------\n"
+                      "                        TEST FALLIDO                        \n"
+                      "------------------------------------------------------------\n")
+                print(e)
+            else:
+                try:
+                    print("\nExtrayendo vectores de características " + str(
+                        classifierParams[0]) + " de los datos de entrenamiento...")
+                    trainDataDescriptorsOrderBySignType = calculateDescriptors(trainDataOrderBySignType,
+                                                                               initializedDescriptor)
+                except Exception as e:
+                    print("Ha ocurrido un error extrayendo los vectores de características " + str(
+                        classifierParams[0]) + " :(")
+                    print("\n"
+                          "------------------------------------------------------------\n"
+                          "                        TEST FALLIDO                        \n"
+                          "------------------------------------------------------------\n")
+                    print(e)
+                else:
+                    try:
+                        print("\nCreación de los clasificadores " + str(classifierParams[2]) + "...")
+                        classifiers = createClassifiers(classifierParams[2])
+                    except Exception as e:
+                        print("Ha ocurrido un error creando los clasificadores " + str(classifierParams[2]) + " :(")
+                        print("\n"
+                              "------------------------------------------------------------\n"
+                              "                        TEST FALLIDO                        \n"
+                              "------------------------------------------------------------\n")
+                        print(e)
+                    else:
+                        try:
+                            print("\nEntrenando los clasificadores " + str(
+                                classifierParams[2]) + " mediante los vectores de características "
+                                                       "" + str(
+                                classifierParams[0]) + " de cada tipo de señal de tráfico...")
+                            reducer, _, _ = fitClassifiers(classifiers, classifierParams[1],
+                                                           trainDataDescriptorsOrderBySignType)
+                        except Exception as e:
+                            print("Ha ocurrido un error entrenando los clasificadores " + str(
+                                classifierParams[2]) + " :(")
+                            print("\n"
+                                  "------------------------------------------------------------\n"
+                                  "                        TEST FALLIDO                        \n"
+                                  "------------------------------------------------------------\n")
+                            print(e)
+                        else:
+                            try:
+                                print("\nClasificadores entrenados con éxito...")
+                                print(
+                                    "\nVa a comenzar la detección de señales de tráfico en las imágenes de test... \n(" + constants.TEST_PATH + ")\n")
+                                print("Analizando y extrayendo regiones de interés...")
+
+                                try:
+                                    testImages = loadImages(constants.TEST_PATH)
+                                    detections, numDetections, imagesWithDetections = detectSignsOnDirectory(testImages,
+                                                                                                             mser)
+                                except Exception as e:
+                                    print("Ha ocurrido un error en el proceso de detección de señales :(")
+                                    print("\n"
+                                          "------------------------------------------------------------\n"
+                                          "                        TEST FALLIDO                        \n"
+                                          "------------------------------------------------------------\n")
+                                    print(e)
+                                else:
+                                    resultImagesPath = "resultado_imgs"
+
+                                    print(
+                                        "\nEl proceso ha concluido con éxito, las imágenes de test con sus respectivas detecciones (con "
+                                        "eliminación de repeticiones) serán "
+                                        "guardadas en", resultImagesPath)
+
+                                    print("\nGenerando resultados...")
+
+                                    try:
+                                        if os.path.isdir(resultImagesPath):
+                                            shutil.rmtree(resultImagesPath)
+
+                                        os.mkdir(resultImagesPath)
+
+                                        for file, image in tqdm(imagesWithDetections):
+                                            cv2.imwrite(resultImagesPath + "/" + file, image)
+                                            sleep(0.02)
+                                    except Exception as e:
+                                        print("Ha ocurrido un error guardando los archivos :(")
+                                        print("\n"
+                                              "------------------------------------------------------------\n"
+                                              "                        TEST FALLIDO                        \n"
+                                              "------------------------------------------------------------\n")
+                                        print(e)
+                                    else:
+                                        print(
+                                            "\nA continuación se listarán las detecciones obtenidas, con eliminación de repeticiones, "
+                                            "por cada "
+                                            "archivo en",
+                                            constants.TEST_PATH + "\n")
+
+                                        total = 0
+                                        for file, number in numDetections:
+                                            print(file, ".......", number,
+                                                  "   detecciones" if number < 10 else "  detecciones")
+                                            total += number
+                                        print("Total ...........", total, "detecciones")
+                                        try:
+                                            print("\nExtrayendo vectores de características " + str(
+                                                classifierParams[0]) + " de las detecciones extraidas...")
+                                            testDetectionsDescriptors = calculateDescriptors(
+                                                detections,
+                                                initializedDescriptor, True)
+                                        except Exception as e:
+                                            print(
+                                                "Ha ocurrido un error extrayendo los vectores de características " + str(
+                                                    classifierParams[0]) + " :(")
+                                            print("\n"
+                                                  "------------------------------------------------------------\n"
+                                                  "                        TEST FALLIDO                        \n"
+                                                  "------------------------------------------------------------\n")
+                                            print(e)
+                                        else:
+                                            try:
+                                                print(
+                                                    "\nA continuación se realizarán las predicciones mediante las detecciones... (tolerancia "
+                                                    "para asumir no señal < " + str(toleranceNoSignal) + ")")
+                                                print("\nAplicando formato a datos de validación...")
+                                                random.shuffle(testDetectionsDescriptors)
+                                                predictedSignTypes, trueSignTypes = predictProbability(classifiers,
+                                                                                                       reducer,
+                                                                                                       testDetectionsDescriptors,
+                                                                                                       0.5, True)
+                                            except Exception as e:
+                                                print("Ha ocurrido un error realizando las predicciones :(")
+                                                print("\n"
+                                                      "------------------------------------------------------------\n"
+                                                      "                        TEST FALLIDO                        \n"
+                                                      "------------------------------------------------------------\n")
+                                                print(e)
+                                            else:
+                                                print(
+                                                    "\nEl proceso de predicción de tipo de señal de tráfico ha finalizado con "
+                                                    "éxito, a continuación se mostrarán los resultados...")
+                                                try:
+                                                    print("\nMostrando matriz de confusión...")
+                                                    confusionMatrix = confusion_matrix(trueSignTypes,
+                                                                                       predictedSignTypes)
+                                                    matrixDisplay = ConfusionMatrixDisplay(
+                                                        confusion_matrix=confusionMatrix,
+                                                        display_labels=constants.SIGN_NAMES)
+                                                    matrixDisplay.plot(cmap='Blues', xticks_rotation=45)
+                                                    plt.title("clasificador " + str(classifierParams[0]) + "-" + str(
+                                                        classifierParams[1]) + "-" + str(classifierParams[2]))
+                                                    plt.tight_layout()
+                                                    plt.show()
+                                                except Exception as e:
+                                                    print("Ha ocurrido un error mostrando la matriz de confusión :(")
+                                                    print("\n"
+                                                          "------------------------------------------------------------\n"
+                                                          "                        TEST FALLIDO                        \n"
+                                                          "------------------------------------------------------------\n")
+                                                    print(e)
+                                                else:
+                                                    try:
+                                                        print(
+                                                            "\nMostrando reporte de resultados del clasificador " + str(
+                                                                classifierParams[0]) + "-" + str(
+                                                                classifierParams[1]) + "-" + str(
+                                                                classifierParams[2]) + "...")
+                                                        classificationReport = classification_report(trueSignTypes,
+                                                                                                     predictedSignTypes,
+                                                                                                     target_names=constants.SIGN_NAMES)
+                                                        print(classificationReport)
+                                                    except Exception as e:
+                                                        print(
+                                                            "Ha ocurrido un error mostrando el reporte de resultados :(")
+                                                        print("\n"
+                                                              "------------------------------------------------------------\n"
+                                                              "                        TEST FALLIDO                        \n"
+                                                              "------------------------------------------------------------\n")
+                                                        print(e)
+                                                    else:
+                                                        print("\n"
+                                                              "------------------------------------------------------------\n"
+                                                              "                  TEST TERMINADO CON ÉXITO                  \n"
+                                                              "------------------------------------------------------------\n")
+                                            else:
+                                                finalDetectionsPath = "resultado.txt"
+
+                                                print(
+                                                    "\nEl proceso ha concluido con éxito y las detecciones filtradas serán guardadas en el "
+                                                    "archivo",
+                                                    finalDetectionsPath + ". La codificación de los resultados es la siguiente:")
+                                                print("nombre_archivo.jpg;x1_coord;y1_coord;x2_coord;y2_coord;tipo_señal;score\n")
+                                                print(
+                                                    "  x1_coord  ===>  coordenada x de la esquina superior izquierda de la detección\n"
+                                                    "  y1_coord  ===>  coordenada y de la esquina superior izquierda de la detección\n"
+                                                    "  x2_coord  ===>  coordenada x de la esquina inferior derecha de la detección\n"
+                                                    "  y2_coord  ===>  coordenada y de la esquina inferior derecha de la detección\n"
+                                                    "tipo_señal  ===>  1 -> Obligación      2 -> Peligro        3 -> Stop\n"
+                                                    "                  4 -> dir Prohibida   5 -> ceda el paso   6 -> dir obligatoria\n"
+                                                    "     score  ===>  Puntuación de acierto en la detección\n")
+
+                                                print("Generando archivo de resultados...")
+
+                                                try:
+                                                    detectionsStrings = createDetectionsStrings(detections)
+                                                    file = open(finalDetectionsPath, "w")
+                                                    for detection in tqdm(detectionsStrings):
+                                                        file.write(detection + "\n")
+                                                    file.close()
+                                                except Exception as e:
+                                                    print("Ha ocurrido un error en el proceso de creación del archivo de resultados :(")
+                                                    print("\n"
+                                                          "------------------------------------------------------------\n"
+                                                          "                        TEST FALLIDO                        \n"
+                                                          "------------------------------------------------------------\n")
+                                                    print(e)
+                                                else:
+                                                    realResultsFilePath = "test_alumnos_jpg/gt.txt"
+                                                    print("\nEl archivo de resultados ha sido generado correctamente")
+                                                    print(
+                                                        "\nFinalmente van a mostrarse las estadísticas de funcionamiento del programa a "
+                                                        "partir del fichero de resultados reales",
+                                                        realResultsFilePath)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
