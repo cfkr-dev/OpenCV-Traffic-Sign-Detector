@@ -1,2 +1,1 @@
-# VisionArtificial
-Repositiorio para prácticas de visión artificial URJC
+# Traffic signs detector using OpenCV
